@@ -1,7 +1,7 @@
 use std::{borrow::Cow, path::PathBuf};
 
 use crate::{
-    compositor::{Callback, Component, Compositor, Context, Event, EventResult},
+    compositor::{Callback, Component, Compositor, Context, ContextExt, Event, EventResult},
     ctrl, key, shift,
 };
 use tui::{buffer::Buffer as Surface, widgets::Table};
@@ -49,7 +49,7 @@ pub struct Menu<T: Item> {
     options: Vec<T>,
     editor_data: T::Data,
 
-    cursor: Option<usize>,
+    pub cursor: Option<usize>,
 
     matcher: Box<Matcher>,
     /// (index, score)
@@ -63,6 +63,9 @@ pub struct Menu<T: Item> {
     size: (u16, u16),
     viewport: (u16, u16),
     recalculate: bool,
+
+    /// allow consuming arrow up/down key presses when menu is active without having prior tab/p/n pressed. Useful for completion to prevent unwanted completion interaction
+    allow_arrow_stealing: bool,
 }
 
 impl<T: Item> Menu<T> {
@@ -88,6 +91,7 @@ impl<T: Item> Menu<T> {
             size: (0, 0),
             viewport: (0, 0),
             recalculate: true,
+            allow_arrow_stealing: true,
         }
     }
 
@@ -220,6 +224,15 @@ impl<T: Item> Menu<T> {
     pub fn len(&self) -> usize {
         self.matches.len()
     }
+
+    pub fn interacted_with(&self) -> bool {
+        self.cursor.is_some()
+    }
+
+    pub fn allow_arrow_stealing(mut self, allow: bool) -> Self {
+        self.allow_arrow_stealing = allow;
+        self
+    }
 }
 
 impl<T: Item + PartialEq> Menu<T> {
@@ -247,20 +260,44 @@ impl<T: Item + 'static> Component for Menu<T> {
             compositor.pop();
         }));
 
+        // ignore movement keys if there is only one menu item and it's already selected
+        match event {
+            key!(Esc) | ctrl!('c') | key!(Enter) => (),
+            // all other keys move cursor
+            _  => {
+               if self.matches.len() == 1 && self.cursor != None {
+                    return EventResult::Ignored(close_fn);
+               }
+            },
+        }
+
         match event {
             // esc or ctrl-c aborts the completion and closes the menu
             key!(Esc) | ctrl!('c') => {
-                (self.callback_fn)(cx.editor, self.selection(), MenuEvent::Abort);
+                let event = if self.interacted_with() { MenuEvent::Abort } else { MenuEvent::SoftAbort };
+                (self.callback_fn)(cx.editor, self.selection(), event);
                 return EventResult::Consumed(close_fn);
             }
-            // arrow up/ctrl-p/shift-tab prev completion choice (including updating the doc)
-            shift!(Tab) | key!(Up) | ctrl!('p') => {
+            // ctrl-p/shift-tab prev completion choice (including updating the doc)
+            shift!(Tab) | ctrl!('p') => {
                 self.move_up();
                 (self.callback_fn)(cx.editor, self.selection(), MenuEvent::Update);
                 return EventResult::Consumed(None);
             }
-            key!(Tab) | key!(Down) | ctrl!('n') => {
-                // arrow down/ctrl-n/tab advances completion choice (including updating the doc)
+            // ctrl-n/tab advances completion choice (including updating the doc)
+            key!(Tab) | ctrl!('n') => {
+                self.move_down();
+                (self.callback_fn)(cx.editor, self.selection(), MenuEvent::Update);
+                return EventResult::Consumed(None);
+            }
+            // arrow up prev completion choice (including updating the doc) if allow_arrow_stealing == true or tab/p/n pressed before
+            key!(Up) if self.allow_arrow_stealing || self.interacted_with() => {
+                self.move_up();
+                (self.callback_fn)(cx.editor, self.selection(), MenuEvent::Update);
+                return EventResult::Consumed(None);
+            }
+            // arrow down advances completion choice (including updating the doc) if allow_arrow_stealing == true or tab/p/n pressed before
+            key!(Down) if self.allow_arrow_stealing || self.interacted_with() => {
                 self.move_down();
                 (self.callback_fn)(cx.editor, self.selection(), MenuEvent::Update);
                 return EventResult::Consumed(None);
@@ -384,5 +421,17 @@ impl<T: Item + 'static> Component for Menu<T> {
                 }
             }
         }
+    }
+
+    fn render_ext(&mut self, _ctx: &mut ContextExt) {
+        assert!(false, "not implemented")
+        // let id = String::from(self.id().unwrap());
+        // let surface = surface_by_id_mut(&id, ctx.surface_area, SurfaceFlags::default(), ctx.surfaces);
+
+        // self.render(ctx.surface_area, surface, &mut ctx.vanilla);
+    }
+
+    fn id(&self) -> Option<&'static str> {
+        Some("menu-component")
     }
 }

@@ -1,64 +1,35 @@
-<div align="center">
+## ⚠️THIS IS A FORK THAT IS NOT FUNCTIONAL ON ITS OWN⚠️
 
-<h1>
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="logo_dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="logo_light.svg">
-  <img alt="Helix" height="128" src="logo_light.svg">
-</picture>
-</h1>
+SEE https://github.com/helix-editor/helix if you're looking for Helix Editor  
+SEE https://github.com/gavlig/kodiki if you're looking for Kodiki  
 
-[![Build status](https://github.com/helix-editor/helix/actions/workflows/build.yml/badge.svg)](https://github.com/helix-editor/helix/actions)
-[![GitHub Release](https://img.shields.io/github/v/release/helix-editor/helix)](https://github.com/helix-editor/helix/releases/latest)
-[![Documentation](https://shields.io/badge/-documentation-452859)](https://docs.helix-editor.com/)
-[![GitHub contributors](https://img.shields.io/github/contributors/helix-editor/helix)](https://github.com/helix-editor/helix/graphs/contributors)
-[![Matrix Space](https://img.shields.io/matrix/helix-community:matrix.org)](https://matrix.to/#/#helix-community:matrix.org)
+### Non exhaustive list of changes:
 
-</div>
+- Added an alternative rendering pipeline to be used from external applications
+- Added word selection by double click
+- Added selecting with mouse click and pressed shift
+- Added smart tab indent that matches expected indentation in current line (mimic vscode)
+- Added avoiding of showing the same completion if it was closed by user in the same cursor position
+- Added formatting to symbol picker
+- Added "current symbol under cursor" field in the status panel
+- Added initial focus on first completion item to apply it on first press of enter
+- Added lsp symbols caching for external rendering and less frequent calls to lsp server
+- Added versioning for document symbols and diagnostics for external renderning and syncing
+- Added dark theme indicator for external logic
+- Modified scrolling and cursor positioning because requirements are different from a terminal application
+- Allowed enabling inlay hints from external application
 
-![Screenshot](./screenshot.png)
+### Hotkey changes
 
-A Kakoune / Neovim inspired editor, written in Rust.
-
-The editing model is very heavily based on Kakoune; during development I found
-myself agreeing with most of Kakoune's design decisions.
-
-For more information, see the [website](https://helix-editor.com) or
-[documentation](https://docs.helix-editor.com/).
-
-All shortcuts/keymaps can be found [in the documentation on the website](https://docs.helix-editor.com/keymap.html).
-
-[Troubleshooting](https://github.com/helix-editor/helix/wiki/Troubleshooting)
-
-# Features
-
-- Vim-like modal editing
-- Multiple selections
-- Built-in language server support
-- Smart, incremental syntax highlighting and code editing via tree-sitter
-
-It's a terminal-based editor first, but I'd like to explore a custom renderer
-(similar to Emacs) in wgpu or skulpin.
-
-Note: Only certain languages have indentation definitions at the moment. Check
-`runtime/queries/<lang>/` for `indents.scm`.
-
-# Installation
-
-[Installation documentation](https://docs.helix-editor.com/install.html).
-
-[![Packaging status](https://repology.org/badge/vertical-allrepos/helix.svg)](https://repology.org/project/helix/versions)
-
-# Contributing
-
-Contributing guidelines can be found [here](./docs/CONTRIBUTING.md).
-
-# Getting help
-
-Your question might already be answered on the [FAQ](https://github.com/helix-editor/helix/wiki/FAQ).
-
-Discuss the project on the community [Matrix Space](https://matrix.to/#/#helix-community:matrix.org) (make sure to join `#helix-editor:matrix.org` if you're on a client that doesn't support Matrix Spaces yet).
-
-# Credits
-
-Thanks to [@JakeHL](https://github.com/JakeHL) for designing the logo!
+- Added selecting with shift+left/right/up/down/home/end in normal mode
+- Added word deleting with control+del/backspace in normal mode
+- Added control+/ for commenting
+- Removed control+c for commenting
+- Removed control+f/b for scrolling
+- Added control+f for search
+- Added control+c/v for copy/pasting in normal mode
+- Added control+tab for buffer picker. Might be not the best choice but works for a migrant from vs-like IDE-s
+- Added alt+left/right for jumping forward/backward in jump list
+- Added control+space for completion suggestions
+- Added control+shift+space for signature help
+- Added control+f for search

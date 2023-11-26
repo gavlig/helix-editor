@@ -63,7 +63,7 @@ impl CommandSignature {
     }
 }
 
-fn quit(cx: &mut compositor::Context, args: &[Cow<str>], event: PromptEvent) -> anyhow::Result<()> {
+pub fn quit(cx: &mut compositor::Context, args: &[Cow<str>], event: PromptEvent) -> anyhow::Result<()> {
     log::debug!("quitting...");
 
     if event != PromptEvent::Validate {
@@ -845,6 +845,9 @@ fn theme(
 ) -> anyhow::Result<()> {
     let true_color = cx.editor.config.load().true_color || crate::true_color();
     match event {
+        PromptEvent::SoftAbort => {
+            // do nothing by design
+        },
         PromptEvent::Abort => {
             cx.editor.unset_theme_preview();
         }
@@ -1685,6 +1688,7 @@ pub(super) fn goto_line_number(
     event: PromptEvent,
 ) -> anyhow::Result<()> {
     match event {
+        PromptEvent::SoftAbort => (), // do nothing by design
         PromptEvent::Abort => abort_goto_line_number_preview(cx),
         PromptEvent::Validate => {
             ensure!(!args.is_empty(), "Line number required");

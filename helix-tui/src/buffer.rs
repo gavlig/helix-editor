@@ -2,6 +2,7 @@ use crate::text::{Span, Spans};
 use helix_core::unicode::width::UnicodeWidthStr;
 use std::cmp::min;
 use unicode_segmentation::UnicodeSegmentation;
+use bitflags::bitflags;
 
 use helix_view::graphics::{Color, Modifier, Rect, Style, UnderlineStyle};
 
@@ -91,6 +92,62 @@ impl Default for Cell {
     }
 }
 
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SurfacePlacement {
+    #[default]
+    Unknown,
+
+    Top,
+    Center,
+    Bottom,
+    Left,
+    Right,
+
+    TopLeft,
+    TopRight,
+
+    CenterLeft,
+    CenterRight,
+
+    BottomLeft,
+    BottomRight,
+
+    AreaCoordinates,
+}
+
+bitflags! {
+    #[derive(Default, Clone, Copy, Eq, PartialEq, Debug)]
+    pub struct SurfaceAnchor : u32 {
+        const Unknown = 0b000;
+        const Top = 0b001;
+        const Bottom = 0b010;
+        const Fixed = 0b100;
+    }
+}
+
+pub struct SurfaceFlags {
+    pub anchor: SurfaceAnchor,
+    pub placement: SurfacePlacement,
+}
+
+impl Default for SurfaceFlags {
+    fn default() -> Self {
+        Self {
+            anchor: SurfaceAnchor::Top,
+            placement: SurfacePlacement::Center,
+        }
+    }
+}
+
+impl SurfaceFlags {
+    pub fn editor() -> Self {
+        Self {
+            anchor: SurfaceAnchor::Top,
+            placement: SurfacePlacement::Center,
+        }
+    }
+}
+
 /// A buffer that maps to the desired content of the terminal after the draw call
 ///
 /// No widget in the library interacts directly with the terminal. Instead each of them is required
@@ -126,6 +183,14 @@ pub struct Buffer {
     /// The content of the buffer. The length of this Vec should always be equal to area.width *
     /// area.height
     pub content: Vec<Cell>,
+    /// Defines whether surface rows grow up or down from fixed position when rendered
+    pub anchor: SurfaceAnchor,
+    /// Defines to which part of the screen the surface sticks when rendered
+    pub placement: SurfacePlacement,
+    /// Flag used to indicate if buffer was changed since it was rendered
+        dirty: bool,
+	/// Flag used to indicate that surface doesnt get updated because app state hasnt changed
+		frozen: bool,
 }
 
 impl Buffer {
@@ -135,6 +200,16 @@ impl Buffer {
         Buffer::filled(area, &cell)
     }
 
+    /// Returns a Buffer with all cells set to the default one +
+    pub fn empty_with_spatial(area: Rect, spatial_flags: SurfaceFlags) -> Buffer {
+        let cell: Cell = Default::default();
+        let mut buf = Buffer::filled(area, &cell);
+        buf.anchor = spatial_flags.anchor;
+        buf.placement = spatial_flags.placement;
+
+        buf
+    }
+
     /// Returns a Buffer with all cells initialized with the attributes of the given Cell
     pub fn filled(area: Rect, cell: &Cell) -> Buffer {
         let size = area.area();
@@ -142,7 +217,7 @@ impl Buffer {
         for _ in 0..size {
             content.push(cell.clone());
         }
-        Buffer { area, content }
+        Buffer { area, content, ..Default::default() }
     }
 
     /// Returns a Buffer containing the given lines
@@ -289,6 +364,7 @@ impl Buffer {
         S: AsRef<str>,
     {
         self.set_stringn(x, y, string, usize::MAX, style);
+        self.dirty = true;
     }
 
     /// Print at most the first n characters of a string if enough space is available
@@ -304,6 +380,7 @@ impl Buffer {
     where
         S: AsRef<str>,
     {
+        self.dirty = true;
         self.set_string_truncated_at_end(x, y, string.as_ref(), width, style)
     }
 
@@ -387,6 +464,8 @@ impl Buffer {
                 x_offset += width;
             }
         }
+
+        self.dirty = true;
         (x_offset as u16, y)
     }
 
@@ -430,6 +509,7 @@ impl Buffer {
             x_offset += width;
         }
 
+        self.dirty = true;
         (x_offset as u16, y)
     }
 
@@ -471,6 +551,8 @@ impl Buffer {
                 x_offset += width;
             }
         }
+
+        self.dirty = true;
         (x_offset as u16, y)
     }
 
@@ -492,10 +574,13 @@ impl Buffer {
             x = pos.0;
             remaining_width = remaining_width.saturating_sub(w);
         }
+
+        self.dirty = true;
         (x, y)
     }
 
     pub fn set_span(&mut self, x: u16, y: u16, span: &Span, width: u16) -> (u16, u16) {
+        self.dirty = true;
         self.set_stringn(x, y, span.content.as_ref(), width as usize, span.style)
     }
 
@@ -509,6 +594,7 @@ impl Buffer {
                 self[(x, y)].set_bg(color);
             }
         }
+        self.dirty = true;
     }
 
     pub fn set_style(&mut self, area: Rect, style: Style) {
@@ -517,6 +603,7 @@ impl Buffer {
                 self[(x, y)].set_style(style);
             }
         }
+        self.dirty = true;
     }
 
     /// Resize the buffer so that the mapped area matches the given area and that the buffer
@@ -529,6 +616,7 @@ impl Buffer {
             self.content.resize(length, Default::default());
         }
         self.area = area;
+        self.dirty = true;
     }
 
     /// Reset all cells in the buffer
@@ -536,6 +624,7 @@ impl Buffer {
         for c in &mut self.content {
             c.reset();
         }
+        self.dirty = true;
     }
 
     /// Clear an area in the buffer
@@ -545,6 +634,7 @@ impl Buffer {
                 self[(x, y)].reset();
             }
         }
+        self.dirty = true;
     }
 
     /// Clear an area in the buffer with a default style.
@@ -556,6 +646,7 @@ impl Buffer {
                 cell.set_style(style);
             }
         }
+        self.dirty = true;
     }
 
     /// Merge an other buffer into this one
@@ -586,6 +677,7 @@ impl Buffer {
             self.content[k] = other.content[i].clone();
         }
         self.area = area;
+        self.dirty = true;
     }
 
     /// Builds a minimal sequence of coordinates and Cells necessary to update the UI from
@@ -641,6 +733,27 @@ impl Buffer {
             invalidated = std::cmp::max(affected_width, invalidated).saturating_sub(1);
         }
         updates
+    }
+
+    pub fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn mark_clean(&mut self) {
+        self.dirty = false;
+    }
+
+	pub fn frozen(&self) -> bool {
+		self.frozen
+	}
+
+	pub fn mark_frozen(&mut self) {
+		self.frozen = true;
+	}
+
+	pub fn mark_clean_and_unfrozen(&mut self) {
+        self.dirty = false;
+		self.frozen = false;
     }
 }
 

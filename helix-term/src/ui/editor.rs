@@ -1,6 +1,6 @@
 use crate::{
     commands::{self, OnKeyCallback},
-    compositor::{Component, Context, Event, EventResult},
+    compositor::{Component, Context, ContextExt, Event, EventResult, SurfacesMap, surface_by_id_mut},
     job::{self, Callback},
     key,
     keymap::{KeymapResult, Keymaps},
@@ -19,7 +19,7 @@ use helix_core::{
     syntax::{self, HighlightEvent},
     text_annotations::TextAnnotations,
     unicode::width::UnicodeWidthStr,
-    visual_offset_from_block, Position, Range, Selection, Transaction,
+    visual_offset_from_block, Position, Range, Selection, Transaction, textobject::textobject_word,
 };
 use helix_view::{
     document::{Mode, SavePoint, SCRATCH_BUFFER_NAME},
@@ -31,7 +31,7 @@ use helix_view::{
 };
 use std::{mem::take, num::NonZeroUsize, path::PathBuf, rc::Rc, sync::Arc};
 
-use tui::{buffer::Buffer as Surface, text::Span};
+use tui::{buffer::Buffer as Surface, text::Span, buffer::SurfaceFlags, buffer::SurfacePlacement};
 
 use super::statusline;
 use super::{document::LineDecoration, lsp::SignatureHelp};
@@ -42,7 +42,9 @@ pub struct EditorView {
     pseudo_pending: Vec<KeyEvent>,
     pub(crate) last_insert: (commands::MappableCommand, Vec<InsertEvent>),
     pub(crate) completion: Option<Completion>,
+    pub(crate) last_completion: Option<Completion>,
     spinners: ProgressSpinners,
+    cached_selections_version: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +62,11 @@ impl Default for EditorView {
 }
 
 impl EditorView {
+    pub const ID: &'static str = "editor-component";
+    pub const ID_STATUSLINE: &'static str = "statusline-component";
+    pub const ID_STATUS_MSG: &'static str = "status-msg-component";
+    pub const ID_DIAGNOSTICS: &'static str = "diagnostics-component";
+
     pub fn new(keymaps: Keymaps) -> Self {
         Self {
             keymaps,
@@ -67,7 +74,9 @@ impl EditorView {
             pseudo_pending: Vec::new(),
             last_insert: (commands::MappableCommand::normal_mode, Vec::new()),
             completion: None,
+            last_completion: None,
             spinners: ProgressSpinners::default(),
+            cached_selections_version: None,
         }
     }
 
@@ -119,10 +128,10 @@ impl EditorView {
         }
 
         let mut highlights =
-            Self::doc_syntax_highlights(doc, view.offset.anchor, inner.height, theme);
+            Self::doc_syntax_highlights(doc, view.offset_external.anchor, inner.height, theme);
         let overlay_highlights = Self::overlay_syntax_highlights(
             doc,
-            view.offset.anchor,
+            view.offset_external.anchor,
             inner.height,
             &text_annotations,
         );
@@ -186,7 +195,7 @@ impl EditorView {
             surface,
             inner,
             doc,
-            view.offset,
+            view.offset_external,
             &text_annotations,
             highlights,
             theme,
@@ -220,6 +229,184 @@ impl EditorView {
         statusline::render(&mut context, statusline_area, surface);
     }
 
+    pub fn render_view_ext(
+        &self,
+        editor: &Editor,
+        doc: &Document,
+        view: &View,
+        _viewport: Rect,
+        surfaces: &mut SurfacesMap,
+        is_focused: bool,
+    ) {
+        let inner = view.inner_area(doc);
+        let area = view.area;
+        let theme = &editor.theme;
+        let config = editor.config();
+
+        let id = String::from(EditorView::ID);
+        let surface = &mut surface_by_id_mut(&id, area, SurfaceFlags::editor(), surfaces);
+
+        // clear with background color
+        surface.set_style(area, editor.theme.get("ui.background"));
+
+        let text_annotations = view.text_annotations(doc, Some(theme));
+        let mut line_decorations: Vec<Box<dyn LineDecoration>> = Vec::new();
+        let mut translated_positions: Vec<TranslatedPosition> = Vec::new();
+
+        if is_focused && config.cursorline {
+            line_decorations.push(Self::cursorline_decorator(doc, view, theme))
+        }
+
+        if is_focused && config.cursorcolumn {
+            Self::highlight_cursorcolumn(doc, view, surface, theme, inner, &text_annotations);
+        }
+
+        // Set DAP highlights, if needed.
+        if let Some(frame) = editor.current_stack_frame() {
+            let dap_line = frame.line.saturating_sub(1);
+            let style = theme.get("ui.highlight.frameline");
+            let line_decoration = move |renderer: &mut TextRenderer, pos: LinePos| {
+                if pos.doc_line != dap_line {
+                    return;
+                }
+                renderer.surface.set_style(
+                    Rect::new(inner.x, inner.y + pos.visual_line, inner.width, 1),
+                    style,
+                );
+            };
+
+            line_decorations.push(Box::new(line_decoration));
+        }
+
+        let mut highlights = Self::doc_syntax_highlights(doc, view.offset_external.anchor, inner.height, theme);
+        let overlay_highlights = Self::overlay_syntax_highlights(
+            doc,
+            view.offset_external.anchor,
+            inner.height,
+            &text_annotations,
+        );
+        if !overlay_highlights.is_empty() {
+            highlights = Box::new(syntax::merge(highlights, overlay_highlights));
+        }
+
+        for diagnostic in Self::doc_diagnostics_highlights(doc, theme) {
+            // Most of the `diagnostic` Vecs are empty most of the time. Skipping
+            // a merge for any empty Vec saves a significant amount of work.
+            if diagnostic.is_empty() {
+                continue;
+            }
+            highlights = Box::new(syntax::merge(highlights, diagnostic));
+        }
+
+        let highlights: Box<dyn Iterator<Item = HighlightEvent>> =
+        if is_focused {
+            let focused_view_elements = Self::highlight_focused_view_elements(view, doc, theme);
+            if focused_view_elements.is_empty() {
+                Box::new(highlights)
+            } else {
+                Box::new(syntax::merge(highlights, focused_view_elements))
+            }
+        } else {
+            Box::new(highlights)
+        };
+
+        Self::render_gutter(
+            editor,
+            doc,
+            view,
+            view.area,
+            theme,
+            is_focused,
+            &mut line_decorations,
+        );
+
+        if is_focused {
+            let cursor = doc
+                .selection(view.id)
+                .primary()
+                .cursor(doc.text().slice(..));
+            // set the cursor_cache to out of view in case the position is not found
+            editor.cursor_cache.set(Some(None));
+            let update_cursor_cache = |_: &mut TextRenderer, pos| editor.cursor_cache.set(Some(Some(pos)));
+            translated_positions.push((cursor, Box::new(update_cursor_cache)));
+        }
+
+        render_document(
+            surface,
+            inner,
+            doc,
+            view.offset_external,
+            &text_annotations,
+            highlights,
+            theme,
+            &mut line_decorations,
+            &mut translated_positions,
+        );
+
+        Self::render_rulers(editor, doc, view, inner, surface, theme);
+
+        Self::render_diagnostics_ext(doc, view, inner, surfaces, theme);
+    }
+
+    pub fn render_statusline_ext(
+        &self,
+        editor: &Editor,
+        doc: &Document,
+        view: &View,
+        surfaces: &mut SurfacesMap,
+        is_focused: bool,
+    ) {
+        let mut context = statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
+        let statusline_area = Rect::new(0, 0, view.area.width, 1);
+        let id = String::from(EditorView::ID_STATUSLINE);
+        let statusline_surface = &mut surface_by_id_mut(
+            &id,
+            statusline_area,
+            SurfaceFlags {
+                placement: SurfacePlacement::Top,
+                ..Default::default()
+            },
+            surfaces
+        );
+        statusline::render(&mut context, statusline_area, statusline_surface);
+    }
+
+    pub fn render_status_msg_ext(
+        &self,
+        editor: &Editor,
+        area: Rect,
+        surfaces: &mut SurfacesMap,
+    ) {
+        if let Some((status_msg, severity)) = &editor.status_msg {
+            let status_msg_area = Rect::new(0, 0, area.width, 1);
+            let id = String::from(EditorView::ID_STATUS_MSG);
+            let status_msg_surface = &mut surface_by_id_mut(
+                &id,
+                status_msg_area,
+                SurfaceFlags {
+                    placement: SurfacePlacement::Bottom,
+                    ..Default::default()
+                },
+                surfaces
+            );
+
+            use helix_view::editor::Severity;
+            let style = if *severity == Severity::Error {
+                editor.theme.get("error")
+            } else {
+                editor.theme.get("ui.text")
+            };
+
+            status_msg_surface.set_style(status_msg_area, editor.theme.get("ui.statusline"));
+            status_msg_surface.set_string(
+                area.x,
+                0,
+                status_msg,
+                style,
+            );
+        }
+    }
+
     pub fn render_rulers(
         editor: &Editor,
         doc: &Document,
@@ -242,7 +429,7 @@ impl EditorView {
             .iter()
             // View might be horizontally scrolled, convert from absolute distance
             // from the 1st column to relative distance from left of viewport
-            .filter_map(|ruler| ruler.checked_sub(1 + view.offset.horizontal_offset as u16))
+            .filter_map(|ruler| ruler.checked_sub(1 + view.offset_external.horizontal_offset as u16))
             .filter(|ruler| ruler < &viewport.width)
             .map(|ruler| viewport.clip_left(ruler).with_width(1))
             .for_each(|area| surface.set_style(area, ruler_theme))
@@ -690,6 +877,123 @@ impl EditorView {
         );
     }
 
+    pub fn render_diagnostics_ext(
+        doc: &Document,
+        view: &View,
+        viewport: Rect,
+        surfaces: &mut SurfacesMap,
+        theme: &Theme,
+    ) {
+        use helix_core::diagnostic::Severity;
+        use tui::{
+            layout::Alignment,
+            text::Text,
+            widgets::{Paragraph, Widget, Wrap},
+        };
+
+        let cursor = doc
+            .selection(view.id)
+            .primary()
+            .cursor(doc.text().slice(..));
+
+        let diagnostics = doc.diagnostics().iter().filter(|diagnostic| {
+            diagnostic.range.start <= cursor && diagnostic.range.end >= cursor
+        });
+
+        let warning = theme.get("warning");
+        let error = theme.get("error");
+        let info = theme.get("info");
+        let hint = theme.get("hint");
+
+        let mut max_line_width = 0 as u16;
+
+        let mut lines = Vec::new();
+        let background_style = theme.get("ui.background");
+        for diagnostic in diagnostics {
+            let style = Style::reset()
+                .patch(background_style)
+                .patch(match diagnostic.severity {
+                    Some(Severity::Error) => error,
+                    Some(Severity::Warning) | None => warning,
+                    Some(Severity::Info) => info,
+                    Some(Severity::Hint) => hint,
+                });
+            let text = Text::styled(&diagnostic.message, style);
+
+            for line in text.lines.iter() {
+                max_line_width = max_line_width.max(line.width() as u16);
+            }
+
+            lines.extend(text.lines);
+            let code = diagnostic.code.as_ref().map(|x| match x {
+                NumberOrString::Number(n) => format!("({n})"),
+                NumberOrString::String(s) => format!("({s})"),
+            });
+            if let Some(code) = code {
+                let span = Span::styled(code, style);
+                lines.push(span.into());
+            }
+        }
+
+        let lines_num = lines.len() as u16;
+        if lines_num == 0 {
+            return
+        }
+
+        let paragraph = Paragraph::new(lines)
+            .alignment(Alignment::Right)
+            .wrap(Wrap { trim: true });
+        let width = max_line_width.min(viewport.width);
+        let height = lines_num.min(viewport.height);
+
+        let diagnostics_area = Rect::new(0, 0, width, height);
+        let id = String::from(EditorView::ID_DIAGNOSTICS);
+        let surface = &mut surface_by_id_mut(
+            &id,
+            diagnostics_area,
+            SurfaceFlags {
+                placement: SurfacePlacement::TopRight,
+                ..Default::default()
+            },
+            surfaces
+        );
+
+        paragraph.render(
+            diagnostics_area,
+            surface,
+        );
+    }
+
+    fn render_autoinfo_ext(&mut self, cx: &mut ContextExt) {
+        if let Some(mut info) = cx.vanilla.editor.autoinfo.take() {
+            info.render_ext(cx);
+            cx.vanilla.editor.autoinfo = Some(info);
+        }
+    }
+
+    fn render_editor_ext(&mut self, cx_ext: &mut ContextExt) {
+        let editor_area = cx_ext.editor_area;
+
+        {
+            let cx = &mut cx_ext.vanilla;
+
+            // if the terminal size suddenly changed, we need to trigger a resize
+            cx.editor.resize(editor_area);
+
+            for (view, is_focused) in cx.editor.tree.views() {
+                let doc = cx.editor.document(view.doc).unwrap();
+                self.render_view_ext(cx.editor, doc, view, editor_area, cx_ext.surfaces, is_focused);
+                self.render_statusline_ext(cx.editor, doc, view, cx_ext.surfaces, is_focused);
+            }
+
+            self.render_status_msg_ext(cx.editor, editor_area, cx_ext.surfaces);
+        }
+
+        if let Some(completion) = self.completion.as_mut() {
+            completion.render_ext(cx_ext);
+        }
+    }
+
     /// Apply the highlighting on the lines where a cursor is active
     pub fn cursorline_decorator(
         doc: &Document,
@@ -763,11 +1067,11 @@ impl EditorView {
                 visual_offset_from_block(text, cursor, cursor, &text_format, text_annotations).0;
 
             // if the cursor is horizontally in the view
-            if col >= view.offset.horizontal_offset
-                && inner_area.width > (col - view.offset.horizontal_offset) as u16
+            if col >= view.offset_external.horizontal_offset
+                && inner_area.width > (col - view.offset_external.horizontal_offset) as u16
             {
                 let area = Rect::new(
-                    inner_area.x + (col - view.offset.horizontal_offset) as u16,
+                    inner_area.x + (col - view.offset_external.horizontal_offset) as u16,
                     view.area.y,
                     1,
                     view.area.height,
@@ -952,6 +1256,7 @@ impl EditorView {
         start_offset: usize,
         trigger_offset: usize,
         size: Rect,
+        invoked: commands::CompletionInvoked
     ) -> Option<Rect> {
         let mut completion = Completion::new(
             editor,
@@ -960,6 +1265,7 @@ impl EditorView {
             offset_encoding,
             start_offset,
             trigger_offset,
+            invoked,
         );
 
         if completion.is_empty() {
@@ -984,24 +1290,46 @@ impl EditorView {
         editor.clear_idle_timer(); // don't retrigger
     }
 
-    pub fn handle_idle_timeout(&mut self, cx: &mut commands::Context) -> EventResult {
-        commands::compute_inlay_hints_for_all_views(cx.editor, cx.jobs);
+    fn update_completion(&mut self, cx: &mut commands::Context) {
+        if let Some(completion) = &mut self.completion {
+            completion.update(cx);
+            if completion.is_empty() {
+                self.clear_completion(cx.editor);
+            }
+        }
+    }
 
+    fn handle_idle_completion(&mut self, cx: &mut commands::Context) -> Option<EventResult> {
         if let Some(completion) = &mut self.completion {
             return if completion.ensure_item_resolved(cx) {
-                EventResult::Consumed(None)
+                Some(EventResult::Consumed(None))
             } else {
-                EventResult::Ignored(None)
+                Some(EventResult::Ignored(None))
             };
         }
 
         if cx.editor.mode != Mode::Insert || !cx.editor.config().auto_completion {
-            return EventResult::Ignored(None);
+            return Some(EventResult::Ignored(None));
         }
 
-        crate::commands::insert::idle_completion(cx);
+        commands::insert::idle_completion(cx);
+        return None
+    }
 
-        EventResult::Consumed(None)
+    pub fn handle_idle_timeout(&mut self, cx: &mut commands::Context) -> EventResult {
+        commands::compute_inlay_hints_for_all_views(cx.editor, cx.jobs);
+
+        // gavlig: maybe this should be done in document::apply_impl but we also notify lsp about changes there, so it could be a premature call
+        let doc = doc!(cx.editor);
+        if doc.symbols_outdated() {
+            crate::commands::lsp::symbols_update(cx);
+        }
+
+        if let Some(res) = self.handle_idle_completion(cx) {
+            res
+        } else {
+            EventResult::Consumed(None)
+        }
     }
 }
 
@@ -1045,14 +1373,20 @@ impl EditorView {
 
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                let editor = &mut cxt.editor;
-
-                if let Some((pos, view_id)) = pos_and_view(editor, row, column, true) {
+                if let Some((pos, view_id)) = pos_and_view(cxt.editor, row, column, true) {
+                    let editor = &mut cxt.editor;
                     let doc = doc_mut!(editor, &view!(editor, view_id).doc);
 
+                    // multiple cursor spawning
                     if modifiers == KeyModifiers::ALT {
                         let selection = doc.selection(view_id).clone();
                         doc.set_selection(view_id, selection.push(Range::point(pos)));
+                    // selection extension to new mouse pos
+                    } else if modifiers == KeyModifiers::SHIFT {
+                        let extend = true;
+                        let new_range = doc.selection(view_id).primary().put_cursor(doc.text().slice(..), pos, extend);
+                        doc.set_selection(view_id, Selection::single(new_range.anchor, new_range.head));
+                    // putting cursor where mouse clicked
                     } else {
                         doc.set_selection(view_id, Selection::point(pos));
                     }
@@ -1060,10 +1394,23 @@ impl EditorView {
                     editor.focus(view_id);
                     editor.ensure_cursor_in_view(view_id);
 
+                    commands::signature_help_impl(
+                        cxt,
+                        commands::SignatureHelpInvoked::Automatic,
+                    );
+
+                    // update completion since selection is likely changed
+                    self.update_completion(cxt);
+
+                    if modifiers == KeyModifiers::CONTROL {
+                        commands::goto_definition(cxt);
+                    }
+
                     return EventResult::Consumed(None);
                 }
 
-                if let Some((coords, view_id)) = gutter_coords_and_view(editor, row, column) {
+                if let Some((coords, view_id)) = gutter_coords_and_view(cxt.editor, row, column) {
+                    let editor = &mut cxt.editor;
                     editor.focus(view_id);
 
                     let (view, doc) = current!(cxt.editor);
@@ -1080,6 +1427,26 @@ impl EditorView {
                         commands::dap_toggle_breakpoint_impl(cxt, path, line);
                         return EventResult::Consumed(None);
                     }
+                }
+
+                EventResult::Ignored(None)
+            }
+
+            MouseEventKind::DoubleClick(MouseButton::Left) => {
+                // select current word under cursor
+                if let Some((_, _)) = pos_and_view(cxt.editor, row, column, true) {
+                    let (view, doc) = current!(cxt.editor);
+
+                    let slice = doc.text().slice(..);
+                    let cursor = doc.cursor(view.id);
+                    let range = Range::new(cursor, cursor);
+                    let long = false;
+
+                    let word_range = textobject_word(slice, range, helix_core::textobject::TextObject::Inside, 0, long);
+
+                    doc.set_selection(view.id, Selection::single(word_range.anchor, word_range.head));
+
+                    return EventResult::Consumed(None);
                 }
 
                 EventResult::Ignored(None)
@@ -1117,7 +1484,7 @@ impl EditorView {
                 }
 
                 let offset = config.scroll_lines.unsigned_abs();
-                commands::scroll(cxt, offset, direction);
+                commands::scroll(cxt, offset, direction, false);
 
                 cxt.editor.tree.focus = current_view;
                 cxt.editor.ensure_cursor_in_view(current_view);
@@ -1214,7 +1581,7 @@ impl Component for EditorView {
             jobs: context.jobs,
         };
 
-        match event {
+        let event_result = match event {
             Event::Paste(contents) => {
                 cx.count = cx.editor.count;
                 commands::paste_bracketed_value(&mut cx, contents.clone());
@@ -1242,8 +1609,8 @@ impl Component for EditorView {
                 cx.editor.reset_idle_timer();
                 canonicalize_key(&mut key);
 
-                // clear status
-                cx.editor.status_msg = None;
+                // clear status. gavlig: why? this makes status msg flicker every time we press a key
+                // cx.editor.status_msg = None;
 
                 let mode = cx.editor.mode();
                 let (view, _) = current!(cx.editor);
@@ -1273,13 +1640,17 @@ impl Component for EditorView {
 
                                     if callback.is_some() {
                                         // assume close_fn
+                                        // keep track of last closed completion to not open it again automatically
+                                        self.last_completion = self.completion.take();
                                         self.clear_completion(cx.editor);
 
-                                        // In case the popup was deleted because of an intersection w/ the auto-complete menu.
-                                        commands::signature_help_impl(
-                                            &mut cx,
-                                            commands::SignatureHelpInvoked::Automatic,
-                                        );
+                                        if key.code != KeyCode::Esc {
+                                            // In case the popup was deleted because of an intersection w/ the auto-complete menu.
+                                            commands::signature_help_impl(
+                                                &mut cx,
+                                                commands::SignatureHelpInvoked::Automatic,
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -1296,12 +1667,7 @@ impl Component for EditorView {
                                 self.last_insert.1.push(InsertEvent::Key(key));
 
                                 // lastly we recalculate completion
-                                if let Some(completion) = &mut self.completion {
-                                    completion.update(&mut cx);
-                                    if completion.is_empty() {
-                                        self.clear_completion(cx.editor);
-                                    }
-                                }
+                                self.update_completion(&mut cx);
                             }
                         }
                         mode => self.command_mode(mode, &mut cx, key),
@@ -1330,7 +1696,11 @@ impl Component for EditorView {
                     let view = view_mut!(cx.editor, focus);
                     let doc = doc_mut!(cx.editor, &view.doc);
 
-                    view.ensure_cursor_in_view(doc, config.scrolloff);
+                    // gavlig: call ensure_cursor_in_view only when selection changed(cursor moved) otherwise this doesnt work well
+                    // when we scrolled far away from cursor and pressed space for example
+                    if self.cached_selections_version != Some(doc.selections_version()) {
+                        view.ensure_cursor_in_view(doc, config.scrolloff);
+                    }
 
                     // Store a history state if not in insert mode. This also takes care of
                     // committing changes when leaving insert mode.
@@ -1353,7 +1723,12 @@ impl Component for EditorView {
                 }
                 EventResult::Consumed(None)
             }
-        }
+        };
+
+        // update cached selections version to sync with current document
+        self.cached_selections_version = Some(doc!(context.editor).selections_version());
+
+        event_result
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
@@ -1458,6 +1833,18 @@ impl Component for EditorView {
         }
     }
 
+    fn render_ext(&mut self, cx: &mut ContextExt) {
+        self.render_editor_ext(cx);
+
+        if cx.vanilla.editor.config().auto_info {
+            self.render_autoinfo_ext(cx);
+        }
+    }
+
+    fn id(&self) -> Option<&'static str> {
+        Some(Self::ID)
+    }
+
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
         match editor.cursor() {
             // All block cursors are drawn manually
@@ -1465,9 +1852,18 @@ impl Component for EditorView {
             cursor => cursor,
         }
     }
+
+    fn cursor_ext(&self, editor: &Editor) -> Option<(Vec<Position>, &str)> {
+        Some((editor.cursor_ext(), self.id().unwrap()))
+    }
 }
 
 fn canonicalize_key(key: &mut KeyEvent) {
+    // _ + shift + space wouldn't work otherwise
+    if key.code == KeyCode::Char(' ') {
+        return;
+    }
+
     if let KeyEvent {
         code: KeyCode::Char(_),
         modifiers: _,

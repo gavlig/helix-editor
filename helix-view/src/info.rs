@@ -1,4 +1,4 @@
-use crate::input::KeyEvent;
+use crate::{input::KeyEvent, graphics::Rect};
 use helix_core::{register::Registers, unicode::width::UnicodeWidthStr};
 use std::{collections::BTreeSet, fmt::Write};
 
@@ -85,4 +85,15 @@ impl Info {
         infobox.width = 30; // copied content could be very long
         infobox
     }
+
+	pub fn area(&self) -> Rect {
+		let width = self.width + 2 + 2; // +2 for border, +2 for margin
+        let height = self.height + 2; // +2 for border
+        Rect::new(
+            0,
+            0,
+            width,
+            height,
+        )
+	}
 }

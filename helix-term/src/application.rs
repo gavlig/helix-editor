@@ -614,6 +614,10 @@ impl Application {
                     return true;
                 }
             }
+			EditorEvent::StatusMsgTimer => {
+                self.editor.clear_idle_timer();
+                self.editor.status_msg = None;
+            }
         }
 
         false
@@ -725,7 +729,7 @@ impl Application {
                         };
                         let doc = self.editor.document_by_path_mut(&path).filter(|doc| {
                             if let Some(version) = params.version {
-                                if version != doc.version() {
+                                if version != doc.version() as i32 {
                                     log::info!("Version ({version}) is out of date for {path:?} (expected ({}), dropping PublishDiagnostic notification", doc.version());
                                     return false;
                                 }

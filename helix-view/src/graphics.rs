@@ -248,6 +248,15 @@ impl Rect {
             && self.y < other.y + other.height
             && self.y + self.height > other.y
     }
+
+	pub fn same_position(self, other: Rect) -> bool {
+		self.x == other.x && self.y == other.y
+	}
+
+	pub fn assign_position(&mut self, other: Rect) {
+		self.x = other.x;
+		self.y = other.y;
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

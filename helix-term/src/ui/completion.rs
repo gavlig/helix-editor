@@ -1,11 +1,11 @@
-use crate::compositor::{Component, Context, Event, EventResult};
+use crate::compositor::{Component, Context, ContextExt, Event, EventResult, surface_by_id_mut};
 use helix_view::{
     document::SavePoint,
     editor::CompleteAction,
     theme::{Modifier, Style},
     ViewId,
 };
-use tui::{buffer::Buffer as Surface, text::Span};
+use tui::{buffer::Buffer as Surface, text::Span, buffer::SurfaceFlags, buffer::SurfacePlacement};
 
 use std::{borrow::Cow, sync::Arc};
 
@@ -91,14 +91,15 @@ impl menu::Item for CompletionItem {
 /// Wraps a Menu.
 pub struct Completion {
     popup: Popup<Menu<CompletionItem>>,
-    start_offset: usize,
+    pub start_offset: usize,
     #[allow(dead_code)]
-    trigger_offset: usize,
+    pub trigger_offset: usize,
     // TODO: maintain a completioncontext with trigger kind & trigger char
 }
 
 impl Completion {
     pub const ID: &'static str = "completion";
+    pub const ID_DOC: &'static str = "completion-doc";
 
     pub fn new(
         editor: &Editor,
@@ -107,7 +108,9 @@ impl Completion {
         offset_encoding: helix_lsp::OffsetEncoding,
         start_offset: usize,
         trigger_offset: usize,
+        _invoked: commands::CompletionInvoked,
     ) -> Self {
+        let preview_completion_insert = editor.config().preview_completion_insert;
         let replace_mode = editor.config().completion_replace;
         // Sort completion items according to their preselect status (given by the LSP server)
         items.sort_by_key(|item| !item.preselect.unwrap_or(false));
@@ -210,13 +213,15 @@ impl Completion {
             let (view, doc) = current!(editor);
 
             // if more text was entered, remove it
-            doc.restore(view, &savepoint);
+            if event != PromptEvent::SoftAbort {
+                doc.restore(view, &savepoint);
+            }
 
             match event {
-                PromptEvent::Abort => {
+                PromptEvent::Abort | PromptEvent::SoftAbort => {
                     editor.last_completion = None;
                 }
-                PromptEvent::Update => {
+                PromptEvent::Update if preview_completion_insert => {
                     // always present here
                     let item = item.unwrap();
 
@@ -238,6 +243,7 @@ impl Completion {
                         changes: completion_changes(&transaction, trigger_offset),
                     });
                 }
+                PromptEvent::Update => {}
                 PromptEvent::Validate => {
                     // always present here
                     let item = item.unwrap();
@@ -287,10 +293,10 @@ impl Completion {
                     }
                 }
             };
-        });
+        }).allow_arrow_stealing(true); // (invoked == commands::CompletionInvoked::Manually);
         let popup = Popup::new(Self::ID, menu)
             .with_scrollbar(false)
-            .ignore_escape_key(true);
+            .ignore_escape_key(false); // gavlig: this allows menu callback to take over event handling and restore savepoint on esc
         let mut completion = Self {
             popup,
             start_offset,
@@ -299,6 +305,12 @@ impl Completion {
 
         // need to recompute immediately in case start_offset != trigger_offset
         completion.recompute_filter(editor);
+
+        // put focus on first item in items list if we're not previewing to be able to apply completion instantly after it appeared
+        if !preview_completion_insert {
+            let menu = completion.popup.contents_mut();
+            menu.cursor = Some(0);
+        }
 
         completion
     }
@@ -414,25 +426,11 @@ impl Completion {
     pub fn area(&mut self, viewport: Rect, editor: &Editor) -> Rect {
         self.popup.area(viewport, editor)
     }
-}
 
-impl Component for Completion {
-    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
-        self.popup.handle_event(event, cx)
-    }
-
-    fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
-        self.popup.required_size(viewport)
-    }
-
-    fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        self.popup.render(area, surface, cx);
-
+    pub fn markdown_popup(&mut self, area: Rect, cx: &mut Context) -> Option<(Markdown, Rect)> {
         // if we have a selection, render a markdown popup on top/below with info
-        let option = match self.popup.contents().selection() {
-            Some(option) => option,
-            None => return,
-        };
+        let option = if let Some(opt) = self.popup.contents().selection() { opt } else { return None };
+
         // need to render:
         // option.detail
         // ---
@@ -442,9 +440,7 @@ impl Component for Completion {
         let language = doc.language_name().unwrap_or("");
         let text = doc.text().slice(..);
         let cursor_pos = doc.selection(view.id).primary().cursor(text);
-        let coords = view
-            .screen_coords_at_pos(doc, text, cursor_pos)
-            .expect("cursor must be in view");
+        let coords = if let Some(coords) = view.screen_coords_at_pos(doc, text, cursor_pos) { coords } else { return None };
         let cursor_pos = coords.row as u16;
 
         let markdowned = |lang: &str, detail: Option<&str>, doc: Option<&str>| {
@@ -477,7 +473,7 @@ impl Component for Completion {
                 // TODO: set language based on doc scope
                 markdowned(language, option.detail.as_deref(), None)
             }
-            None => return,
+            None => return None,
         };
 
         let popup_area = {
@@ -516,15 +512,55 @@ impl Component for Completion {
                 (0, avail_height_above)
             };
             if avail_height <= 1 {
-                return;
+                return None;
             }
 
             Rect::new(0, y, area.width, avail_height.min(15))
         };
 
-        // clear area
-        let background = cx.editor.theme.get("ui.popup");
-        surface.clear_with(doc_area, background);
-        markdown_doc.render(doc_area, surface, cx);
+        Some((markdown_doc, doc_area))
+    }
+}
+
+impl Component for Completion {
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+        self.popup.handle_event(event, cx)
+    }
+
+    fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
+        self.popup.required_size(viewport)
+    }
+
+    fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        self.popup.render(area, surface, cx);
+
+        // if we have a selection, render a markdown popup on top/below with info
+        if let Some((mut markdown_doc, area)) = self.markdown_popup(area, cx) {
+            let background = cx.editor.theme.get("ui.popup");
+            surface.clear_with(area, background);
+            markdown_doc.render(area, surface, cx);
+        }
+    }
+
+    fn render_ext(&mut self, ctx: &mut ContextExt) {
+        self.popup.render_ext(ctx);
+
+        // if we have a selection, render a markdown popup on top/below with info
+        if let Some((mut markdown_doc, area)) = self.markdown_popup(ctx.editor_area, &mut ctx.vanilla) {
+            let markdown_surface = {
+                let id = String::from(Completion::ID_DOC);
+                surface_by_id_mut(&id, area, SurfaceFlags{ placement: SurfacePlacement::AreaCoordinates, ..Default::default() }, ctx.surfaces)
+            };
+
+            // clear area
+            let background = ctx.vanilla.editor.theme.get("ui.popup");
+            markdown_surface.clear_with(area, background);
+
+            markdown_doc.render(area, markdown_surface, &mut ctx.vanilla);
+        }
+    }
+
+    fn id(&self) -> Option<&'static str> {
+        Some(Completion::ID)
     }
 }

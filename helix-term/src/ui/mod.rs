@@ -78,6 +78,9 @@ pub fn regex_prompt(
         completion_fn,
         move |cx: &mut crate::compositor::Context, input: &str, event: PromptEvent| {
             match event {
+                PromptEvent::SoftAbort => {
+                    // do nothing by design
+                }
                 PromptEvent::Abort => {
                     let (view, doc) = current!(cx.editor);
                     doc.set_selection(view.id, snapshot.clone());

@@ -29,14 +29,14 @@ pub enum NumberOrString {
     String(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DiagnosticTag {
     Unnecessary,
     Deprecated,
 }
 
 /// Corresponds to [`lsp_types::Diagnostic`](https://docs.rs/lsp-types/0.94.0/lsp_types/struct.Diagnostic.html)
-#[derive(Debug, Clone)]
+#[derive(Debug, Eq, Clone)]
 pub struct Diagnostic {
     pub range: Range,
     pub line: usize,
@@ -47,3 +47,13 @@ pub struct Diagnostic {
     pub source: Option<String>,
     pub data: Option<serde_json::Value>,
 }
+
+impl PartialEq for Diagnostic {
+	fn eq(&self, other: &Diagnostic) -> bool {
+		self.range == other.range &&
+		self.line == other.line &&
+		self.message == other.message &&
+		self.severity == other.severity
+	}
+}
+

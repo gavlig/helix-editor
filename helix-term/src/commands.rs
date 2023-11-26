@@ -347,6 +347,7 @@ impl MappableCommand {
         goto_first_change, "Goto first change",
         goto_last_change, "Goto last change",
         goto_line_start, "Goto line start",
+        goto_line_start_ext, "Goto line start or first nonwhite character if already at line start",
         goto_line_end, "Goto line end",
         goto_next_buffer, "Goto next buffer",
         goto_previous_buffer, "Goto previous buffer",
@@ -359,6 +360,7 @@ impl MappableCommand {
         extend_to_line_end_newline, "Extend to line end",
         signature_help, "Show signature help",
         insert_tab, "Insert tab char",
+        insert_tab_ext, "Insert tab char or indent appropriate for current line if cursor is at the line start",
         insert_newline, "Insert newline char",
         delete_char_backward, "Delete previous char",
         delete_char_forward, "Delete next char",
@@ -757,6 +759,36 @@ fn goto_line_start(cx: &mut Context) {
     )
 }
 
+fn goto_line_start_ext(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+
+    let extend = cx.editor.mode == Mode::Select;
+
+    let text = doc.text().slice(..);
+    let last_cursor_pos = doc.cursor_wtext(view.id, text);
+
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let line = range.cursor_line(text);
+
+        let start_of_line_pos = text.line_to_char(line);
+
+        // initially go to first non whitespace char and then to start of line on second call if we're already at first non whitespace
+        if let Some(first_non_whitespace_pos) = find_first_non_whitespace_char(text.line(line)) {
+            let first_non_whitespace_pos = text.line_to_char(line) + first_non_whitespace_pos;
+
+            if first_non_whitespace_pos == last_cursor_pos {
+                range.put_cursor(text, start_of_line_pos, extend)
+            } else {    
+                range.put_cursor(text, first_non_whitespace_pos, extend)
+            }
+        } else {
+            range.put_cursor(text, start_of_line_pos, extend)
+        }
+    });
+    
+    doc.set_selection(view.id, selection);
+}
+
 fn goto_next_buffer(cx: &mut Context) {
     goto_buffer(cx.editor, Direction::Forward);
 }
@@ -1071,6 +1103,14 @@ fn move_prev_long_word_start(cx: &mut Context) {
 
 fn move_next_long_word_end(cx: &mut Context) {
     move_word_impl(cx, movement::move_next_long_word_end)
+}
+
+pub fn move_cur_word_start(cx: &mut Context) {
+    move_word_impl(cx, movement::move_cur_word_start)
+}
+
+pub fn move_cur_word_end(cx: &mut Context) {
+    move_word_impl(cx, movement::move_cur_word_end)
 }
 
 fn goto_para_impl<F>(cx: &mut Context, move_fn: F)
@@ -1485,7 +1525,7 @@ fn switch_to_lowercase(cx: &mut Context) {
     });
 }
 
-pub fn scroll(cx: &mut Context, offset: usize, direction: Direction) {
+pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, move_cursor: bool) {
     use Direction::*;
     let config = cx.editor.config();
     let (view, doc) = current!(cx.editor);
@@ -1514,6 +1554,10 @@ pub fn scroll(cx: &mut Context, offset: usize, direction: Direction) {
         &text_fmt,
         &annotations,
     );
+
+    if !move_cursor {
+        return
+    }
 
     let mut head;
     match direction {
@@ -1565,25 +1609,33 @@ pub fn scroll(cx: &mut Context, offset: usize, direction: Direction) {
 fn page_up(cx: &mut Context) {
     let view = view!(cx.editor);
     let offset = view.inner_height();
-    scroll(cx, offset, Direction::Backward);
+    scroll_and_move_cursor(cx, offset, Direction::Backward);
 }
 
 fn page_down(cx: &mut Context) {
     let view = view!(cx.editor);
     let offset = view.inner_height();
-    scroll(cx, offset, Direction::Forward);
+    scroll_and_move_cursor(cx, offset, Direction::Forward);
 }
 
 fn half_page_up(cx: &mut Context) {
     let view = view!(cx.editor);
     let offset = view.inner_height() / 2;
-    scroll(cx, offset, Direction::Backward);
+    scroll_and_move_cursor(cx, offset, Direction::Backward);
 }
 
 fn half_page_down(cx: &mut Context) {
     let view = view!(cx.editor);
     let offset = view.inner_height() / 2;
-    scroll(cx, offset, Direction::Forward);
+    scroll_and_move_cursor(cx, offset, Direction::Forward);
+}
+
+pub fn scroll_and_move_cursor(cx: &mut Context, offset: usize, direction: Direction) {
+    scroll(cx, offset, direction, true);
+}
+
+pub fn scroll_viewport_only(cx: &mut Context, offset: usize, direction: Direction) {
+    scroll(cx, offset, direction, false);
 }
 
 #[allow(deprecated)]
@@ -2748,7 +2800,7 @@ fn insert_at_line_end(cx: &mut Context) {
 // scheme
 async fn make_format_callback(
     doc_id: DocumentId,
-    doc_version: i32,
+    doc_version: usize,
     view_id: ViewId,
     format: impl Future<Output = Result<Transaction, FormatterError>> + Send + 'static,
     write: Option<(Option<PathBuf>, bool)>,
@@ -2877,7 +2929,7 @@ fn normal_mode(cx: &mut Context) {
 }
 
 // Store a jump on the jumplist.
-fn push_jump(view: &mut View, doc: &Document) {
+pub fn push_jump(view: &mut View, doc: &Document) {
     let jump = (doc.id(), doc.selection(view.id).clone());
     view.jumps.push(jump);
 }
@@ -3189,7 +3241,7 @@ pub mod insert {
                 _ => return,
             }
         }
-        super::completion(cx);
+        super::completion_impl(cx, CompletionInvoked::Automatic);
     }
 
     fn language_server_completion(cx: &mut Context, ch: char) {
@@ -3216,7 +3268,7 @@ pub mod insert {
             // TODO: what if trigger is multiple chars long
             if triggers.iter().any(|trigger| trigger.contains(ch)) {
                 cx.editor.clear_idle_timer();
-                super::completion(cx);
+                super::completion_impl(cx, CompletionInvoked::Automatic);
             }
         }
     }
@@ -3300,6 +3352,40 @@ pub mod insert {
         // indent by one to reach 4 spaces).
 
         let indent = Tendril::from(doc.indent_style.as_str());
+        let transaction = Transaction::insert(
+            doc.text(),
+            &doc.selection(view.id).clone().cursors(doc.text().slice(..)),
+            indent,
+        );
+        doc.apply(&transaction, view.id);
+    }
+
+    pub fn insert_tab_ext(cx: &mut Context) {
+        let (view, doc) = current!(cx.editor);
+
+        let text = doc.text().slice(..);
+
+        let cursor_pos = doc.cursor(view.id);
+        let current_line = text.char_to_line(cursor_pos);
+        let line_start_pos = text.line_to_char(current_line);
+
+        // indent as for new line if cursor is at the beginning of the line
+        let indent = if cursor_pos == line_start_pos {
+            Tendril::from(indent::indent_for_newline(
+                doc.language_config(),
+                doc.syntax(),
+                &doc.indent_style,
+                doc.tab_width(),
+                text,
+                current_line,
+                cursor_pos,
+                current_line,
+            ))
+        // otherwise just single indent character
+        } else {
+            Tendril::from(doc.indent_style.as_str())
+        };
+
         let transaction = Transaction::insert(
             doc.text(),
             &doc.selection(view.id).clone().cursors(doc.text().slice(..)),
@@ -4205,7 +4291,18 @@ fn remove_primary_selection(cx: &mut Context) {
     doc.set_selection(view.id, selection);
 }
 
+
+#[derive(PartialEq, Eq)]
+pub enum CompletionInvoked {
+    Manually,
+    Automatic,
+}
+
 pub fn completion(cx: &mut Context) {
+    completion_impl(cx, CompletionInvoked::Manually);
+}
+
+pub fn completion_impl(cx: &mut Context, invoked: CompletionInvoked) {
     use helix_lsp::{lsp, util::pos_to_lsp_pos};
 
     let (view, doc) = current!(cx.editor);
@@ -4302,6 +4399,16 @@ pub fn completion(cx: &mut Context) {
             }
             let size = compositor.size();
             let ui = compositor.find::<ui::EditorView>().unwrap();
+
+            // Check if it's the same completion that user aborted last time.
+            // If so then don't invoke it again if invocation is automatic
+            if invoked == CompletionInvoked::Automatic && ui.last_completion.is_some() {
+                let last_completion = ui.last_completion.as_ref().unwrap();
+                if last_completion.start_offset == start_offset {
+                    return;
+                }
+            }
+
             let completion_area = ui.set_completion(
                 editor,
                 savepoint,
@@ -4310,10 +4417,11 @@ pub fn completion(cx: &mut Context) {
                 start_offset,
                 trigger_offset,
                 size,
+                invoked,
             );
             let size = compositor.size();
             let signature_help_area = compositor
-                .find_id::<Popup<SignatureHelp>>(SignatureHelp::ID)
+                .find_id_mut::<Popup<SignatureHelp>>(SignatureHelp::ID)
                 .map(|signature_help| signature_help.area(size, editor));
             // Delete the signature help popup if they intersect.
             if matches!((completion_area, signature_help_area),(Some(a), Some(b)) if a.intersects(b))
@@ -4701,11 +4809,11 @@ fn align_view_middle(cx: &mut Context) {
 }
 
 fn scroll_up(cx: &mut Context) {
-    scroll(cx, cx.count(), Direction::Backward);
+    scroll(cx, cx.count(), Direction::Backward, true);
 }
 
 fn scroll_down(cx: &mut Context) {
-    scroll(cx, cx.count(), Direction::Forward);
+    scroll(cx, cx.count(), Direction::Forward, true);
 }
 
 fn goto_ts_object_impl(cx: &mut Context, object: &'static str, direction: Direction) {

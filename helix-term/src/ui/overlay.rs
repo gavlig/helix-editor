@@ -3,9 +3,9 @@ use helix_view::{
     graphics::{CursorKind, Rect},
     Editor,
 };
-use tui::buffer::Buffer;
+use tui::buffer::{Buffer, SurfaceFlags};
 
-use crate::compositor::{Component, Context, Event, EventResult};
+use crate::compositor::{Component, Context, ContextExt, Event, EventResult, surface_by_id_mut};
 
 /// Contains a component placed in the center of the parent component
 pub struct Overlay<T> {
@@ -48,6 +48,15 @@ impl<T: Component + 'static> Component for Overlay<T> {
         self.content.render(dimensions, frame, ctx)
     }
 
+	fn render_ext(&mut self, ctx: &mut ContextExt) {
+        let id = String::from(self.id().unwrap());
+
+        let overlay_area = (self.calc_child_size)(ctx.screen_area);
+        let surface = surface_by_id_mut(&id, overlay_area, SurfaceFlags::default(), ctx.surfaces);
+
+        self.content.render(overlay_area, surface, &mut ctx.vanilla);
+    }
+
     fn required_size(&mut self, (width, height): (u16, u16)) -> Option<(u16, u16)> {
         let area = Rect {
             x: 0,
@@ -68,6 +77,10 @@ impl<T: Component + 'static> Component for Overlay<T> {
     fn cursor(&self, area: Rect, ctx: &Editor) -> (Option<Position>, CursorKind) {
         let dimensions = (self.calc_child_size)(area);
         self.content.cursor(dimensions, ctx)
+    }
+
+    fn cursor_ext(&self, editor: &Editor) -> Option<(Vec<Position>, &str)> {
+        self.content.cursor_ext(editor)
     }
 
     fn id(&self) -> Option<&'static str> {

@@ -8,7 +8,7 @@ use helix_core::doc_formatter::TextFormat;
 use helix_core::encoding::Encoding;
 use helix_core::syntax::Highlight;
 use helix_core::text_annotations::{InlineAnnotation, TextAnnotations};
-use helix_core::Range;
+use helix_core::{Range, RopeSlice};
 use helix_vcs::{DiffHandle, DiffProviderRegistry};
 
 use ::parking_lot::Mutex;
@@ -110,6 +110,12 @@ pub type DocumentSavedEventResult = Result<DocumentSavedEvent, anyhow::Error>;
 pub type DocumentSavedEventFuture = BoxFuture<'static, DocumentSavedEventResult>;
 
 #[derive(Debug)]
+pub struct DocumentSymbols {
+    pub document_version: Option<usize>,
+    pub data: Vec<lsp::SymbolInformation>,
+}
+
+#[derive(Debug)]
 pub struct SavePoint {
     /// The view this savepoint is associated with
     pub view: ViewId,
@@ -120,6 +126,7 @@ pub struct Document {
     pub(crate) id: DocumentId,
     text: Rope,
     selections: HashMap<ViewId, Selection>,
+    selections_version: usize,
 
     /// Inlay hints annotations for the document, by view.
     ///
@@ -163,10 +170,14 @@ pub struct Document {
     last_saved_time: SystemTime,
 
     last_saved_revision: usize,
-    version: i32, // should be usize?
+    version: usize,
     pub(crate) modified_since_accessed: bool,
 
+    symbols: DocumentSymbols,
+    symbols_version: usize,
+    symbols_under_cursor: Vec<lsp::SymbolInformation>,
     diagnostics: Vec<Diagnostic>,
+    diagnostics_version: usize,
     language_server: Option<Arc<helix_lsp::Client>>,
 
     diff_handle: Option<DiffHandle>,
@@ -264,7 +275,11 @@ impl fmt::Debug for Document {
             .field("last_saved_revision", &self.last_saved_revision)
             .field("version", &self.version)
             .field("modified_since_accessed", &self.modified_since_accessed)
+            .field("symbols", &self.symbols)
+            .field("symbols_version", &self.symbols_version)
+            .field("symbols_under_cursor", &self.symbols_under_cursor)
             .field("diagnostics", &self.diagnostics)
+            .field("diagnostics_version", &self.diagnostics_version)
             // .field("language_server", &self.language_server)
             .finish()
     }
@@ -587,6 +602,7 @@ impl Document {
             has_bom,
             text,
             selections: HashMap::default(),
+            selections_version: 0,
             inlay_hints: HashMap::default(),
             inlay_hints_oudated: false,
             indent_style: DEFAULT_INDENT,
@@ -596,7 +612,11 @@ impl Document {
             language: None,
             changes,
             old_state,
+            symbols: DocumentSymbols { document_version: None, data: Vec::new() },
+            symbols_version: 0,
+            symbols_under_cursor: Vec::new(),
             diagnostics: Vec::new(),
+            diagnostics_version: 0,
             version: 0,
             history: Cell::new(History::default()),
             savepoints: Vec::new(),
@@ -989,11 +1009,25 @@ impl Document {
         self.language_server = language_server;
     }
 
-    /// Select text within the [`Document`].
-    pub fn set_selection(&mut self, view_id: ViewId, selection: Selection) {
+    #[inline]
+    pub fn selections_version(&self) -> usize {
+        self.selections_version
+    }
+
+    fn insert_selection(&mut self, view_id: ViewId, selection: Selection) {
         // TODO: use a transaction?
         self.selections
             .insert(view_id, selection.ensure_invariants(self.text().slice(..)));
+
+        self.selections_version += 1;
+    }
+
+    /// Select text within the [`Document`].
+    pub fn set_selection(&mut self, view_id: ViewId, selection: Selection) {
+        self.insert_selection(view_id, selection);
+
+        // gavlig: all cursor movement is done via set_selection so we can use this as a trigger event to update symbols_under_cursor
+        self.update_symbols_under_cursor(view_id);
     }
 
     /// Find the origin selection of the text in a document, i.e. where
@@ -1029,6 +1063,7 @@ impl Document {
 
     /// Remove a view's selection and inlay hints from this document.
     pub fn remove_view(&mut self, view_id: ViewId) {
+        // gavlig: not sure if increment selection version here
         self.selections.remove(&view_id);
         self.inlay_hints.remove(&view_id);
     }
@@ -1058,6 +1093,8 @@ impl Document {
                     selection.clone().ensure_invariants(self.text.slice(..)),
                 );
             }
+
+            self.selections_version += 1;
 
             self.modified_since_accessed = true;
         }
@@ -1327,12 +1364,12 @@ impl Document {
     }
 
     /// Get the document's latest saved revision.
-    pub fn get_last_saved_revision(&mut self) -> usize {
+    pub fn get_last_saved_revision(&self) -> usize {
         self.last_saved_revision
     }
 
     /// Get the current revision number
-    pub fn get_current_revision(&mut self) -> usize {
+    pub fn get_current_revision(&self) -> usize {
         let history = self.history.take();
         let current_revision = history.current_revision();
         self.history.set(history);
@@ -1374,7 +1411,7 @@ impl Document {
     }
 
     /// Current document version, incremented at each change.
-    pub fn version(&self) -> i32 {
+    pub fn version(&self) -> usize {
         self.version
     }
 
@@ -1460,6 +1497,16 @@ impl Document {
         &self.selections
     }
 
+    pub fn cursor(&self, view_id: ViewId) -> usize {
+        self.cursor_wtext(view_id, self.text().slice(..))
+    }
+
+    pub fn cursor_wtext(&self, view_id: ViewId, text: RopeSlice) -> usize {
+        self.selection(view_id)
+            .primary()
+            .cursor(text)
+    }
+
     pub fn relative_path(&self) -> Option<PathBuf> {
         self.path
             .as_deref()
@@ -1482,7 +1529,7 @@ impl Document {
     }
 
     pub fn versioned_identifier(&self) -> lsp::VersionedTextDocumentIdentifier {
-        lsp::VersionedTextDocumentIdentifier::new(self.url().unwrap(), self.version)
+        lsp::VersionedTextDocumentIdentifier::new(self.url().unwrap(), self.version as i32)
     }
 
     pub fn position(
@@ -1504,10 +1551,71 @@ impl Document {
         &self.diagnostics
     }
 
+    #[inline]
+    pub fn diagnostics_vec(&self) -> &Vec<Diagnostic> {
+        &self.diagnostics
+    }
+
+    #[inline]
+    pub fn diagnostics_version(&self) -> usize {
+        self.diagnostics_version
+    }
+
     pub fn set_diagnostics(&mut self, diagnostics: Vec<Diagnostic>) {
         self.diagnostics = diagnostics;
         self.diagnostics
             .sort_unstable_by_key(|diagnostic| diagnostic.range);
+
+        self.diagnostics_version += 1;
+    }
+
+    #[inline]
+    pub fn symbols_under_cursor(&self) -> &[lsp::SymbolInformation] {
+        &self.symbols_under_cursor
+    }
+
+    fn update_symbols_under_cursor(&mut self, view_id: ViewId) {
+        self.symbols_under_cursor.clear();
+
+        let cursor_text_pos = self
+            .selection(view_id)
+            .primary()
+            .cursor(self.text().slice(..));
+
+        let symbols = &self.symbols.data;
+
+        for symbol in symbols {
+            let symbol_start = if let Ok(pos) = self.text.try_line_to_char(symbol.location.range.start.line as usize) { pos + symbol.location.range.start.character as usize } else {continue };
+            let symbol_end = if let Ok(pos) = self.text.try_line_to_char(symbol.location.range.end.line as usize) { pos + symbol.location.range.end.character as usize } else { continue };
+
+            if symbol_start <= cursor_text_pos && cursor_text_pos <= symbol_end {
+                self.symbols_under_cursor.push(symbol.clone());
+            }
+        }
+    }
+
+    #[inline]
+    pub fn symbols(&self) -> &[lsp::SymbolInformation] {
+        &self.symbols.data
+    }
+
+    #[inline]
+    pub fn symbols_version(&self) -> usize {
+        self.symbols_version
+    }
+
+    pub fn set_symbols(&mut self, symbols: Vec<lsp::SymbolInformation>) {
+        self.symbols.data = symbols;
+        self.symbols_version += 1;
+        self.symbols.document_version = Some(self.version);
+    }
+
+    pub fn symbols_outdated(&self) -> bool {
+        if let Some(version) = self.symbols.document_version {
+            version != self.version
+        } else {
+            true
+        }
     }
 
     /// Get the document's auto pairs. If the document has a recognized

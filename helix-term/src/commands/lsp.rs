@@ -15,7 +15,7 @@ use tui::{
 
 use super::{align_view, push_jump, Align, Context, Editor, Open};
 
-use helix_core::{path, text_annotations::InlineAnnotation, Selection};
+use helix_core::{path, text_annotations::InlineAnnotation, Selection, Position};
 use helix_view::{
     document::{DocumentInlayHints, DocumentInlayHintsId, Mode},
     editor::Action,
@@ -93,7 +93,9 @@ impl ui::menu::Item for lsp::SymbolInformation {
 
     fn format(&self, current_doc_path: &Self::Data) -> Row {
         if current_doc_path.as_ref() == Some(&self.location.uri) {
-            self.name.as_str().into()
+            let string = format!("{}{}", if self.container_name.is_some() {"> "} else {""}, self.name);
+            let kind = format!("{:?}", self.kind);
+            format!("| {:<17}| {:<50}|", kind, string).into()
         } else {
             match self.location.uri.to_file_path() {
                 Ok(path) => {
@@ -250,7 +252,15 @@ fn sym_picker(
                 // we flip the range so that the cursor sits on the start of the symbol
                 // (for example start of the function).
                 doc.set_selection(view.id, Selection::single(range.head, range.anchor));
-                align_view(doc, view, Align::Center);
+
+                let symbol_lines_num = symbol.location.range.end.line - symbol.location.range.start.line;
+                let alignment =
+                if symbol_lines_num > (view.area.height / 2) as u32 {
+                    Align::Top
+                } else {
+                    Align::Center
+                };
+                align_view(doc, view, alignment);
             }
         },
         move |_editor, symbol| Some(location_to_file_location(&symbol.location)),
@@ -321,25 +331,47 @@ fn diag_picker(
     .truncate_start(false)
 }
 
-pub fn symbol_picker(cx: &mut Context) {
-    fn nested_to_flat(
-        list: &mut Vec<lsp::SymbolInformation>,
-        file: &lsp::TextDocumentIdentifier,
-        symbol: lsp::DocumentSymbol,
-    ) {
-        #[allow(deprecated)]
-        list.push(lsp::SymbolInformation {
-            name: symbol.name,
-            kind: symbol.kind,
-            tags: symbol.tags,
-            deprecated: symbol.deprecated,
-            location: lsp::Location::new(file.uri.clone(), symbol.selection_range),
-            container_name: None,
-        });
-        for child in symbol.children.into_iter().flatten() {
-            nested_to_flat(list, file, child);
-        }
+fn symbol_nested_to_flat(
+    list: &mut Vec<lsp::SymbolInformation>,
+    file: &lsp::TextDocumentIdentifier,
+    symbol: lsp::DocumentSymbol,
+) {
+
+    #[allow(deprecated)]
+    list.push(lsp::SymbolInformation {
+        name: symbol.name,
+        kind: symbol.kind,
+        tags: symbol.tags,
+        deprecated: symbol.deprecated,
+        location: lsp::Location::new(file.uri.clone(), symbol.selection_range),
+        container_name: None,
+    });
+
+    for child in symbol.children.into_iter().flatten() {
+        symbol_nested_to_flat(list, file, child);
     }
+}
+
+// lsp has two ways to represent symbols (flat/nested)
+// convert the nested variant to flat, so that we have a homogeneous list
+fn symbols_vec_from_response(symbols: lsp::DocumentSymbolResponse, editor: &mut Editor) -> Vec<lsp::SymbolInformation> {
+    let symbols = match symbols {
+        lsp::DocumentSymbolResponse::Flat(symbols) => symbols,
+        lsp::DocumentSymbolResponse::Nested(symbols) => {
+            println!("got nested symbols! {:?}", symbols);
+
+            let doc = doc!(editor);
+            let mut flat_symbols = Vec::new();
+            for symbol in symbols {
+                symbol_nested_to_flat(&mut flat_symbols, &doc.identifier(), symbol)
+            }
+            flat_symbols
+        }
+    };
+    symbols
+}
+
+pub fn symbol_picker(cx: &mut Context) {
     let doc = doc!(cx.editor);
 
     let language_server = language_server!(cx.editor, doc);
@@ -359,20 +391,7 @@ pub fn symbol_picker(cx: &mut Context) {
         future,
         move |editor, compositor, response: Option<lsp::DocumentSymbolResponse>| {
             if let Some(symbols) = response {
-                // lsp has two ways to represent symbols (flat/nested)
-                // convert the nested variant to flat, so that we have a homogeneous list
-                let symbols = match symbols {
-                    lsp::DocumentSymbolResponse::Flat(symbols) => symbols,
-                    lsp::DocumentSymbolResponse::Nested(symbols) => {
-                        let doc = doc!(editor);
-                        let mut flat_symbols = Vec::new();
-                        for symbol in symbols {
-                            nested_to_flat(&mut flat_symbols, &doc.identifier(), symbol)
-                        }
-                        flat_symbols
-                    }
-                };
-
+                let symbols = symbols_vec_from_response(symbols, editor);
                 let picker = sym_picker(symbols, current_url, offset_encoding);
                 compositor.push(Box::new(overlaid(picker)))
             }
@@ -434,6 +453,33 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
             };
             let dyn_picker = DynamicPicker::new(picker, Box::new(get_symbols));
             compositor.push(Box::new(overlaid(dyn_picker)))
+        },
+    )
+}
+
+pub fn symbols_update(cx: &mut Context) {
+    let doc = doc!(cx.editor);
+
+    let language_server = language_server!(cx.editor, doc);
+
+    let future = match language_server.document_symbols(doc.identifier()) {
+        Some(future) => future,
+        None => {
+            cx.editor
+                .set_error("Language server does not support document symbols");
+            return;
+        }
+    };
+
+    cx.callback(
+        future,
+        move |editor, _compositor, response: Option<lsp::DocumentSymbolResponse>| {
+            if let Some(symbols) = response {
+                let symbols = symbols_vec_from_response(symbols, editor);
+
+                let doc = doc_mut!(editor);
+                doc.set_symbols(symbols);
+            }
         },
     )
 }
@@ -819,7 +865,7 @@ pub fn apply_workspace_edit(
 
         let doc = doc_mut!(editor, &doc_id);
         if let Some(version) = version {
-            if version != doc.version() {
+            if version != doc.version() as i32 {
                 let err = format!("outdated workspace edit for {path:?}");
                 log::error!("{err}, expected {} but got {version}", doc.version());
                 editor.set_error(err);
@@ -1228,11 +1274,15 @@ pub fn signature_help_impl(cx: &mut Context, invoked: SignatureHelpInvoked) {
             };
             contents.set_active_param_range(active_param_range());
 
-            let old_popup = compositor.find_id::<Popup<SignatureHelp>>(SignatureHelp::ID);
+            // gavlig: replace old popup only if it has the same label otherwise make new one with new position
+            let old_popup = if let Some(popup) = compositor.find_id::<Popup<SignatureHelp>>(SignatureHelp::ID) {
+                if *popup.contents().label() == signature.label { Some(popup) } else { None }
+            } else { None };
+
             let mut popup = Popup::new(SignatureHelp::ID, contents)
                 .position(old_popup.and_then(|p| p.get_position()))
                 .position_bias(Open::Above)
-                .ignore_escape_key(true);
+                .ignore_escape_key(false); // gavlig: this allows menu callback to take over event handling and not switch to normal mode on esc
 
             // Don't create a popup if it intersects the auto-complete menu.
             let size = compositor.size();
@@ -1304,6 +1354,73 @@ pub fn hover(cx: &mut Context) {
 
                 let contents = ui::Markdown::new(contents, editor.syn_loader.clone());
                 let popup = Popup::new("hover", contents).auto_close(true);
+                compositor.replace_or_push("hover", popup);
+            }
+        },
+    );
+}
+
+// gavlig: copy-paste from function above, avoiding sharing code currently to save the headache during rebase
+pub fn hover_ext(cx: &mut Context, row: u16, column: u16) {
+    let (view, doc) = current!(cx.editor);
+    let language_server = language_server!(cx.editor, doc);
+    let offset_encoding = language_server.offset_encoding();
+
+    let ignore_virtual_text = true;
+    let pos_helix = if let Some(pos) = view.pos_at_screen_coords(doc, row, column, ignore_virtual_text) { pos } else { return };
+
+    let text = doc.text();
+
+    let pos = helix_lsp::util::pos_to_lsp_pos(
+        text,
+        pos_helix,
+        offset_encoding,
+    );
+
+    let future = match language_server.text_document_hover(doc.identifier(), pos, None) {
+        Some(future) => future,
+        None => {
+            cx.editor
+                .set_error("Language server does not support hover");
+            return;
+        }
+    };
+
+    cx.callback(
+        future,
+        move |editor, compositor, response: Option<lsp::Hover>| {
+            if let Some(hover) = response {
+                // hover.contents / .range <- used for visualizing
+
+                fn marked_string_to_markdown(contents: lsp::MarkedString) -> String {
+                    match contents {
+                        lsp::MarkedString::String(contents) => contents,
+                        lsp::MarkedString::LanguageString(string) => {
+                            if string.language == "markdown" {
+                                string.value
+                            } else {
+                                format!("```{}\n{}\n```", string.language, string.value)
+                            }
+                        }
+                    }
+                }
+
+                let contents = match hover.contents {
+                    lsp::HoverContents::Scalar(contents) => marked_string_to_markdown(contents),
+                    lsp::HoverContents::Array(contents) => contents
+                        .into_iter()
+                        .map(marked_string_to_markdown)
+                        .collect::<Vec<_>>()
+                        .join("\n\n"),
+                    lsp::HoverContents::Markup(contents) => contents.value,
+                };
+
+                // skip if contents empty
+
+                let contents = ui::Markdown::new(contents, editor.syn_loader.clone());
+                let popup = Popup::new("hover", contents)
+                    .position(Some(Position{ row: row as usize, col: column as usize }))
+                    .auto_close(true);
                 compositor.replace_or_push("hover", popup);
             }
         },
@@ -1479,8 +1596,12 @@ pub fn select_references_to_symbol_under_cursor(cx: &mut Context) {
     );
 }
 
+pub fn compute_inlay_hints_for_all_views_ctx(ctx: &mut Context) {
+    compute_inlay_hints_for_all_views(ctx.editor, ctx.jobs);
+}
+
 pub fn compute_inlay_hints_for_all_views(editor: &mut Editor, jobs: &mut crate::job::Jobs) {
-    if !editor.config().lsp.display_inlay_hints {
+    if !editor.display_inlay_hints() {
         return;
     }
 
@@ -1561,7 +1682,7 @@ fn compute_inlay_hints_for_view(
         future?,
         move |editor, _compositor, response: Option<Vec<lsp::InlayHint>>| {
             // The config was modified or the window was closed while the request was in flight
-            if !editor.config().lsp.display_inlay_hints || editor.tree.try_get(view_id).is_none() {
+            if !editor.display_inlay_hints() {
                 return;
             }
 

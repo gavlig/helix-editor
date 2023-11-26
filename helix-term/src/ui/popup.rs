@@ -1,9 +1,9 @@
 use crate::{
     commands::Open,
-    compositor::{Callback, Component, Context, Event, EventResult},
+    compositor::{Callback, Component, Context, ContextExt, Event, EventResult, surface_by_id_mut},
     ctrl, key,
 };
-use tui::buffer::Buffer as Surface;
+use tui::buffer::{Buffer as Surface, SurfaceFlags, SurfacePlacement};
 
 use helix_core::Position;
 use helix_view::{
@@ -87,6 +87,10 @@ impl<T: Component> Popup<T> {
     pub fn ignore_escape_key(mut self, ignore: bool) -> Self {
         self.ignore_escape_key = ignore;
         self
+    }
+
+	pub fn set_ignore_escape_key(&mut self, ignore: bool) {
+        self.ignore_escape_key = ignore;
     }
 
     /// Calculate the position where the popup should be rendered and return the coordinates of the
@@ -288,6 +292,31 @@ impl<T: Component> Component for Popup<T> {
                 }
             }
         }
+    }
+
+    fn render_ext(&mut self, ctx: &mut ContextExt) {
+        let viewport = ctx.editor_area;
+        // trigger required_size so we recalculate if the child changed
+        self.required_size((viewport.width, viewport.height));
+
+        ctx.vanilla.scroll = Some(self.scroll);
+
+        let (rel_x, rel_y) = self.get_rel_position(viewport, &ctx.vanilla.editor);
+
+        // clip to viewport
+        let area = viewport.intersection(Rect::new(rel_x, rel_y, self.size.0, self.size.1));
+        let inner = area.inner(&self.margin);
+
+        let surface = {
+            let id = String::from(self.id);
+            surface_by_id_mut(&id, area, SurfaceFlags{ placement: SurfacePlacement::AreaCoordinates, ..Default::default() }, ctx.surfaces)
+        };
+
+        // clear area
+        let background = ctx.vanilla.editor.theme.get("ui.popup");
+        surface.clear_with(area, background);
+
+        self.contents.render(inner, surface, &mut ctx.vanilla);
     }
 
     fn id(&self) -> Option<&'static str> {

@@ -1,6 +1,6 @@
 use crate::{
     alt,
-    compositor::{Component, Compositor, Context, Event, EventResult},
+    compositor::{Component, Compositor, Context, ContextExt, Event, EventResult, surface_by_id_mut},
     ctrl, key, shift,
     ui::{
         self,
@@ -12,6 +12,7 @@ use crate::{
 use futures_util::future::BoxFuture;
 use tui::{
     buffer::Buffer as Surface,
+    buffer::SurfaceFlags,
     layout::Constraint,
     text::{Span, Spans},
     widgets::{Block, BorderType, Borders, Cell, Table},
@@ -352,6 +353,18 @@ impl<T: Item + 'static> Component for FilePicker<T> {
         }
     }
 
+    fn render_ext(&mut self, _ctx: &mut ContextExt) {
+        assert!(false, "not implemented");
+        // let id = String::from(self.id().unwrap());
+        // let surface = surface_by_id_mut(&id, ctx.surface_area, SurfaceFlags::default(), ctx.surfaces);
+
+        // self.render(ctx.surface_area, surface, &mut ctx.vanilla);
+    }
+
+    fn id(&self) -> Option<&'static str> {
+        Some("file-picker-component")
+    }
+
     fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
         if let Event::IdleTimeout = event {
             return self.handle_idle_timeout(ctx);
@@ -362,6 +375,10 @@ impl<T: Item + 'static> Component for FilePicker<T> {
 
     fn cursor(&self, area: Rect, ctx: &Editor) -> (Option<Position>, CursorKind) {
         self.picker.cursor(area, ctx)
+    }
+
+    fn cursor_ext(&self, editor: &Editor) -> Option<(Vec<Position>, &str)> {
+        self.picker.cursor_ext(editor)
     }
 
     fn required_size(&mut self, (width, height): (u16, u16)) -> Option<(u16, u16)> {
@@ -889,6 +906,18 @@ impl<T: Item + 'static> Component for Picker<T> {
         );
     }
 
+    fn render_ext(&mut self, ctx: &mut ContextExt) {
+        let id = String::from(self.id().unwrap());
+        let area = ctx.screen_area;
+        let surface = surface_by_id_mut(&id, area, SurfaceFlags::default(), ctx.surfaces);
+
+        self.render(area, surface, &mut ctx.vanilla);
+    }
+
+    fn id(&self) -> Option<&'static str> {
+        Some("picker-component")
+    }
+
     fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
         let block = Block::default().borders(Borders::ALL);
         // calculate the inner area inside the box
@@ -898,6 +927,10 @@ impl<T: Item + 'static> Component for Picker<T> {
         let area = inner.clip_left(1).with_height(1);
 
         self.prompt.cursor(area, editor)
+    }
+
+    fn cursor_ext(&self, editor: &Editor) -> Option<(Vec<Position>, &str)> {
+        self.prompt.cursor_ext(editor)
     }
 }
 
@@ -931,6 +964,14 @@ impl<T: Item + Send + 'static> Component for DynamicPicker<T> {
         self.file_picker.render(area, surface, cx);
     }
 
+    fn render_ext(&mut self, _ctx: &mut ContextExt) {
+        assert!(false, "not implemented");
+        // let id = String::from(self.id().unwrap());
+        // let surface = surface_by_id_mut(&id, ctx.surface_area, SurfaceFlags::default(), ctx.surfaces);
+
+        // self.render(ctx.surface_area, surface, &mut ctx.vanilla);
+    }
+
     fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         let event_result = self.file_picker.handle_event(event, cx);
         let current_query = self.file_picker.picker.prompt.line();
@@ -949,7 +990,7 @@ impl<T: Item + Send + 'static> Component for DynamicPicker<T> {
                 crate::job::Callback::EditorCompositor(Box::new(move |editor, compositor| {
                     // Wrapping of pickers in overlay is done outside the picker code,
                     // so this is fragile and will break if wrapped in some other widget.
-                    let picker = match compositor.find_id::<Overlay<DynamicPicker<T>>>(Self::ID) {
+                    let picker = match compositor.find_id_mut::<Overlay<DynamicPicker<T>>>(Self::ID) {
                         Some(overlay) => &mut overlay.content.file_picker.picker,
                         None => return,
                     };
@@ -963,6 +1004,10 @@ impl<T: Item + Send + 'static> Component for DynamicPicker<T> {
 
     fn cursor(&self, area: Rect, ctx: &Editor) -> (Option<Position>, CursorKind) {
         self.file_picker.cursor(area, ctx)
+    }
+
+    fn cursor_ext(&self, editor: &Editor) -> Option<(Vec<Position>, &str)> {
+        self.file_picker.cursor_ext(editor)
     }
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {

@@ -1,9 +1,10 @@
-use crate::compositor::{Component, Compositor, Context, Event, EventResult};
+use crate::compositor::{Component, Compositor, Context, ContextExt, Event, EventResult, surface_by_id_mut};
 use crate::{alt, ctrl, key, shift, ui};
 use helix_view::input::KeyEvent;
+use helix_view::input::{MouseEvent, MouseEventKind, MouseButton};
 use helix_view::keyboard::KeyCode;
 use std::{borrow::Cow, ops::RangeFrom};
-use tui::buffer::Buffer as Surface;
+use tui::buffer::{Buffer as Surface, SurfaceFlags, SurfacePlacement, SurfaceAnchor};
 use tui::widgets::{Block, Borders, Widget};
 
 use helix_core::{
@@ -21,7 +22,7 @@ type CallbackFn = Box<dyn FnMut(&mut Context, &str, PromptEvent)>;
 pub type DocFn = Box<dyn Fn(&str) -> Option<Cow<str>>>;
 
 pub struct Prompt {
-    prompt: Cow<'static, str>,
+    pub prompt: Cow<'static, str>,
     line: String,
     cursor: usize,
     completion: Vec<Completion>,
@@ -32,6 +33,7 @@ pub struct Prompt {
     callback_fn: CallbackFn,
     pub doc_fn: DocFn,
     next_char_handler: Option<PromptCharHandler>,
+    interacted_with: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,6 +44,8 @@ pub enum PromptEvent {
     Validate,
     /// Abort the change, reverting to the initial state.
     Abort,
+    /// Abort the change without changing/reverting any state
+    SoftAbort
 }
 
 pub enum CompletionDirection {
@@ -83,6 +87,7 @@ impl Prompt {
             callback_fn: Box::new(callback_fn),
             doc_fn: Box::new(|_| None),
             next_char_handler: None,
+            interacted_with: false,
         }
     }
 
@@ -345,163 +350,27 @@ impl Prompt {
     pub fn exit_selection(&mut self) {
         self.selection = None;
     }
-}
 
-const BASE_WIDTH: u16 = 30;
-
-impl Prompt {
-    pub fn render_prompt(&self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        let theme = &cx.editor.theme;
-        let prompt_color = theme.get("ui.text");
-        let completion_color = theme.get("ui.menu");
-        let selected_color = theme.get("ui.menu.selected");
-        let suggestion_color = theme.get("ui.text.inactive");
-        // completion
-
-        let max_len = self
-            .completion
-            .iter()
-            .map(|(_, completion)| completion.len() as u16)
-            .max()
-            .unwrap_or(BASE_WIDTH)
-            .max(BASE_WIDTH);
-
-        let cols = std::cmp::max(1, area.width / max_len);
-        let col_width = (area.width.saturating_sub(cols)) / cols;
-
-        let height = ((self.completion.len() as u16 + cols - 1) / cols)
-            .min(10) // at most 10 rows (or less)
-            .min(area.height.saturating_sub(1));
-
-        let completion_area = Rect::new(
-            area.x,
-            (area.height - height).saturating_sub(1),
-            area.width,
-            height,
-        );
-
-        if !self.completion.is_empty() {
-            let area = completion_area;
-            let background = theme.get("ui.menu");
-
-            let items = height as usize * cols as usize;
-
-            let offset = self
-                .selection
-                .map(|selection| selection / items * items)
-                .unwrap_or_default();
-
-            surface.clear_with(area, background);
-
-            let mut row = 0;
-            let mut col = 0;
-
-            for (i, (_range, completion)) in
-                self.completion.iter().enumerate().skip(offset).take(items)
-            {
-                let color = if Some(i) == self.selection {
-                    selected_color // TODO: just invert bg
-                } else {
-                    completion_color
-                };
-                surface.set_stringn(
-                    area.x + col * (1 + col_width),
-                    area.y + row,
-                    completion,
-                    col_width.saturating_sub(1) as usize,
-                    color,
-                );
-                row += 1;
-                if row > area.height - 1 {
-                    row = 0;
-                    col += 1;
-                }
-            }
-        }
-
+    pub fn calc_doc_height(&self) -> u16 {
         if let Some(doc) = (self.doc_fn)(&self.line) {
-            let mut text = ui::Text::new(doc.to_string());
+            let text = ui::Text::new(doc.to_string());
 
             let max_width = BASE_WIDTH * 3;
             let padding = 1;
 
-            let viewport = area;
-
             let (_width, height) = ui::text::required_size(&text.contents, max_width);
 
-            let area = viewport.intersection(Rect::new(
-                completion_area.x,
-                completion_area.y.saturating_sub(height + padding * 2),
-                max_width,
-                height + padding * 2,
-            ));
-
-            let background = theme.get("ui.help");
-            surface.clear_with(area, background);
-
-            let block = Block::default()
-                // .title(self.title.as_str())
-                .borders(Borders::ALL)
-                .border_style(background);
-
-            let inner = block.inner(area).inner(&Margin::horizontal(1));
-
-            block.render(area, surface);
-            text.render(inner, surface, cx);
-        }
-
-        let line = area.height - 1;
-        // render buffer text
-        surface.set_string(area.x, area.y + line, &self.prompt, prompt_color);
-
-        let (input, is_suggestion): (Cow<str>, bool) = if self.line.is_empty() {
-            // latest value in the register list
-            match self
-                .history_register
-                .and_then(|reg| cx.editor.registers.last(reg))
-                .map(|entry| entry.into())
-            {
-                Some(value) => (value, true),
-                None => (Cow::from(""), false),
-            }
+            height + padding * 2
         } else {
-            (self.line.as_str().into(), false)
-        };
-
-        surface.set_string(
-            area.x + self.prompt.len() as u16,
-            area.y + line,
-            &input,
-            if is_suggestion {
-                suggestion_color
-            } else {
-                prompt_color
-            },
-        );
+            0 as u16
+        }
     }
-}
 
-impl Component for Prompt {
-    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
-        let event = match event {
-            Event::Paste(data) => {
-                self.insert_str(data, cx.editor);
-                self.recalculate_completion(cx.editor);
-                return EventResult::Consumed(None);
-            }
-            Event::Key(event) => *event,
-            Event::Resize(..) => return EventResult::Consumed(None),
-            _ => return EventResult::Ignored(None),
-        };
-
-        let close_fn = EventResult::Consumed(Some(Box::new(|compositor: &mut Compositor, _| {
-            // remove the layer
-            compositor.pop();
-        })));
-
+    fn handle_key_event(&mut self, event: &KeyEvent, cx: &mut Context, close_fn: EventResult) -> EventResult {
         match event {
             ctrl!('c') | key!(Esc) => {
-                (self.callback_fn)(cx, &self.line, PromptEvent::Abort);
+                let prompt_event = if self.interacted_with { PromptEvent::Abort } else { PromptEvent::SoftAbort };
+                (self.callback_fn)(cx, &self.line, prompt_event);
                 return close_fn;
             }
             alt!('b') | ctrl!(Left) => self.move_cursor(Movement::BackwardWord(1)),
@@ -631,24 +500,279 @@ impl Component for Prompt {
                     );
                 }));
                 (self.callback_fn)(cx, &self.line, PromptEvent::Update);
-                return EventResult::Consumed(None);
             }
             // any char event that's not mapped to any other combo
             KeyEvent {
                 code: KeyCode::Char(c),
                 modifiers: _,
             } => {
-                self.insert_char(c, cx);
+                self.insert_char(*c, cx);
                 (self.callback_fn)(cx, &self.line, PromptEvent::Update);
             }
             _ => (),
         };
 
+        if self.line.len() > 0 {
+            self.interacted_with = true;
+        }
+
         EventResult::Consumed(None)
+    }
+
+    fn handle_mouse_event(&mut self, event: &MouseEvent, _cx: &mut Context, close_fn: EventResult) -> EventResult {
+        // let config = cx.editor.config();
+        let MouseEvent {
+            kind,
+            // row,
+            // column,
+            // modifiers,
+            ..
+        } = *event;
+
+        // let pos_and_view = |editor: &Editor, row, column, ignore_virtual_text| {
+        //     editor.tree.views().find_map(|(view, _focus)| {
+        //         view.pos_at_screen_coords(
+        //             &editor.documents[&view.doc],
+        //             row,
+        //             column,
+        //             ignore_virtual_text,
+        //         )
+        //         .map(|pos| (pos, view.id))
+        //     })
+        // };
+
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // (self.callback_fn)(cx, &self.line, PromptEvent::SoftAbort);
+
+                return close_fn;
+
+                // if let Some((pos, view_id)) = pos_and_view(cx.editor, row, column, true) {
+                //     let editor = &mut cx.editor;
+                //     let doc = doc_mut!(editor, &view!(editor, view_id).doc);
+
+                //     return EventResult::Consumed(None);
+                // }
+            }
+
+            _ => EventResult::Ignored(None),
+        }
+    }
+
+}
+
+const BASE_WIDTH: u16 = 30;
+
+impl Prompt {
+    pub const ID: &'static str = "prompt-component";
+
+    fn calc_max_len(&self) -> u16 {
+        let max_len = self
+            .completion
+            .iter()
+            .map(|(_, completion)| completion.len() as u16)
+            .max()
+            .unwrap_or(BASE_WIDTH)
+            .max(BASE_WIDTH);
+
+        max_len
+    }
+
+    fn calc_cols(&self, area_width: u16, max_len: u16) -> u16 {
+        std::cmp::max(1, area_width / max_len)
+    }
+
+    fn calc_height(&self, area: Option<Rect>) -> u16 {
+        let area = match area {
+            Some(a) => a,
+            None => Rect{ height: 10, width: 80, ..Default::default() },
+        };
+        let max_len = self.calc_max_len();
+        let cols = self.calc_cols(area.width, max_len);
+
+        let height = ((self.completion.len() as u16 + cols - 1) / cols)
+            .min(10) // at most 10 rows (or less)
+            .min(area.height.saturating_sub(1));
+
+        height
+    }
+
+    pub fn render_prompt(&self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        let theme = &cx.editor.theme;
+        let prompt_color = theme.get("ui.text");
+        let completion_color = theme.get("ui.menu");
+        let selected_color = theme.get("ui.menu.selected");
+        let suggestion_color = theme.get("ui.text.inactive");
+        // completion
+
+        let max_len = self.calc_max_len();
+        let cols = self.calc_cols(area.width, max_len);
+        let col_width = (area.width.saturating_sub(cols)) / cols;
+
+        let height = self.calc_height(Some(area));
+
+        let completion_area = Rect::new(
+            area.x,
+            (area.height - height).saturating_sub(1),
+            area.width,
+            height,
+        );
+
+        if !self.completion.is_empty() {
+            let area = completion_area;
+            let background = theme.get("ui.menu");
+
+            let items = height as usize * cols as usize;
+
+            let offset = self
+                .selection
+                .map(|selection| selection / items * items)
+                .unwrap_or_default();
+
+            surface.clear_with(area, background);
+
+            let mut row = 0;
+            let mut col = 0;
+
+            for (i, (_range, completion)) in
+                self.completion.iter().enumerate().skip(offset).take(items)
+            {
+                let color = if Some(i) == self.selection {
+                    selected_color // TODO: just invert bg
+                } else {
+                    completion_color
+                };
+                surface.set_stringn(
+                    area.x + col * (1 + col_width),
+                    area.y + row,
+                    completion,
+                    col_width.saturating_sub(1) as usize,
+                    color,
+                );
+                row += 1;
+                if row > area.height - 1 {
+                    row = 0;
+                    col += 1;
+                }
+            }
+        }
+
+        if let Some(doc) = (self.doc_fn)(&self.line) {
+            let mut text = ui::Text::new(doc.to_string());
+
+            let max_width = BASE_WIDTH * 3;
+            let padding = 1;
+
+            let viewport = area;
+
+            let (_width, height) = ui::text::required_size(&text.contents, max_width);
+
+            let area = viewport.intersection(Rect::new(
+                completion_area.x,
+                completion_area.y.saturating_sub(height + padding * 2),
+                max_width,
+                height + padding * 2,
+            ));
+
+            let background = theme.get("ui.help");
+            surface.clear_with(area, background);
+
+            let block = Block::default()
+                // .title(self.title.as_str())
+                .borders(Borders::ALL)
+                .border_style(background);
+
+            let inner = block.inner(area).inner(&Margin::horizontal(1));
+
+            block.render(area, surface);
+            text.render(inner, surface, cx);
+        }
+
+        let line = area.height - 1;
+        // render buffer text
+        surface.set_string(area.x, area.y + line, &self.prompt, prompt_color);
+
+        let (input, is_suggestion): (Cow<str>, bool) = if self.line.is_empty() {
+            // latest value in the register list
+            match self
+                .history_register
+                .and_then(|reg| cx.editor.registers.last(reg))
+                .map(|entry| entry.into())
+            {
+                Some(value) => (value, true),
+                None => (Cow::from(""), false),
+            }
+        } else {
+            (self.line.as_str().into(), false)
+        };
+
+        surface.set_string(
+            area.x + self.prompt.len() as u16,
+            area.y + line,
+            &input,
+            if is_suggestion {
+                suggestion_color
+            } else {
+                prompt_color
+            },
+        );
+    }
+}
+
+impl Component for Prompt {
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+        let close_fn = EventResult::Consumed(Some(Box::new(|compositor: &mut Compositor, _| {
+            // remove the layer
+            compositor.pop();
+        })));
+
+        match event {
+            Event::Paste(data) => {
+                self.insert_str(data, cx.editor);
+                self.recalculate_completion(cx.editor);
+                return EventResult::Consumed(None);
+            }
+            Event::Key(event) => {
+                return self.handle_key_event(event, cx, close_fn);
+            },
+            Event::Mouse(event) => {
+                return self.handle_mouse_event(event, cx, close_fn);
+            }
+            Event::Resize(..) => return EventResult::Consumed(None),
+            _ => return EventResult::Ignored(None),
+        };
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         self.render_prompt(area, surface, cx)
+    }
+
+    fn render_ext(&mut self, ctx: &mut ContextExt) {
+        let id = String::from(self.id().unwrap());
+
+        let height = self.calc_height(Some(ctx.editor_area)) + self.calc_doc_height() + 1; // +1 for input buffer text
+
+        let prompt_area = Rect {
+            x: 0,
+            y: 0,
+            width: ctx.editor_area.width,
+            height
+        };
+
+        let spatial_flags = SurfaceFlags {
+            anchor: SurfaceAnchor::Bottom | SurfaceAnchor::Fixed,
+            placement: SurfacePlacement::Center,
+            ..Default::default()
+        };
+
+        let surface = surface_by_id_mut(&id, prompt_area, spatial_flags, ctx.surfaces);
+
+        surface.clear_with(prompt_area, ctx.vanilla.editor.theme.get("ui.menu"));
+        self.render_prompt(prompt_area, surface, &mut ctx.vanilla);
+    }
+
+    fn id(&self) -> Option<&'static str> {
+        Some(Prompt::ID)
     }
 
     fn cursor(&self, area: Rect, _editor: &Editor) -> (Option<Position>, CursorKind) {
@@ -662,5 +786,15 @@ impl Component for Prompt {
             )),
             CursorKind::Block,
         )
+    }
+
+    fn cursor_ext(&self, _editor: &Editor) -> Option<(Vec<Position>, &str)> {
+        Some((
+            [Position::new(
+                0,
+                self.prompt.len() + UnicodeWidthStr::width(&self.line[..self.cursor])
+            )].into(),
+            self.id().unwrap()
+        ))
     }
 }

@@ -236,7 +236,7 @@ pub struct Config {
     /// etc. Optionally, this can be a list of 2-tuples to specify a
     /// global list of characters to pair. Defaults to true.
     pub auto_pairs: AutoPairConfig,
-    /// Automatic auto-completion, automatically pop up without user trigger. Defaults to true.
+    /// Automatic auto-completion, automatically pop up without user trigger. Defaults to false.
     pub auto_completion: bool,
     /// Automatic formatting on save. Defaults to true.
     pub auto_format: bool,
@@ -251,6 +251,10 @@ pub struct Config {
         deserialize_with = "deserialize_duration_millis"
     )]
     pub idle_timeout: Duration,
+    /// Erase status message after status_msg_timeout expires
+    pub status_msg_timeout: Duration,
+    /// Whether to insert the completion suggestion on hover. Defaults to true.
+    pub preview_completion_insert: bool,
     pub completion_trigger_len: u8,
     /// Whether to instruct the LSP to replace the entire word when applying a completion
     /// or to only insert new text
@@ -362,7 +366,7 @@ impl Default for LspConfig {
     fn default() -> Self {
         Self {
             enable: true,
-            display_messages: false,
+            display_messages: true,
             auto_signature_help: true,
             display_signature_help_docs: true,
             display_inlay_hints: false,
@@ -400,6 +404,7 @@ impl Default for StatusLineConfig {
                 E::Mode,
                 E::Spinner,
                 E::FileName,
+                E::CurrentSymbol,
                 E::FileModificationIndicator,
             ],
             center: vec![],
@@ -484,6 +489,9 @@ pub enum StatusLineElement {
 
     /// Current version control information
     VersionControl,
+
+    /// Current symbol under cursor
+    CurrentSymbol,
 }
 
 // Cursor shape is read and used on every rendered frame and so needs
@@ -733,10 +741,12 @@ impl Default for Config {
             gutters: GutterConfig::default(),
             middle_click_paste: true,
             auto_pairs: AutoPairConfig::default(),
-            auto_completion: true,
-            auto_format: true,
+            auto_completion: false,
+            auto_format: false,
             auto_save: false,
             idle_timeout: Duration::from_millis(400),
+            status_msg_timeout: Duration::from_secs(5),
+            preview_completion_insert: false,
             completion_trigger_len: 2,
             auto_info: true,
             file_picker: FilePickerConfig::default(),
@@ -757,7 +767,7 @@ impl Default for Config {
                 ..SoftWrap::default()
             },
             text_width: 80,
-            completion_replace: false,
+            completion_replace: true,
             workspace_lsp_roots: Vec::new(),
         }
     }
@@ -835,6 +845,8 @@ pub struct Editor {
     /// The currently applied editor theme. While previewing a theme, the previewed theme
     /// is set here.
     pub theme: Theme,
+    /// Indicates if current theme is dark (using ui.background_color and checking if its color's average value is < 127)
+    pub dark_theme: bool,
 
     /// The primary Selection prior to starting a goto_line_number preview. This is
     /// restored when the preview is aborted, or added to the jumplist when it is
@@ -842,6 +854,7 @@ pub struct Editor {
     pub last_selection: Option<Selection>,
 
     pub status_msg: Option<(Cow<'static, str>, Severity)>,
+    pub status_msg_timer: Pin<Box<Sleep>>,
     pub autoinfo: Option<Info>,
 
     pub config: Arc<dyn DynAccess<Config>>,
@@ -881,6 +894,8 @@ pub struct Editor {
     /// field is set and any old requests are automatically
     /// canceled as a result
     pub completion_request_handle: Option<oneshot::Sender<()>>,
+
+    pub display_inlay_hints: bool,
 }
 
 pub type RedrawHandle = (Arc<Notify>, Arc<RwLock<()>>);
@@ -892,6 +907,7 @@ pub enum EditorEvent {
     LanguageServerMessage((usize, Call)),
     DebuggerEvent(dap::Payload),
     IdleTimer,
+    StatusMsgTimer,
 }
 
 #[derive(Debug, Clone)]
@@ -931,7 +947,7 @@ pub enum CloseError {
 
 impl Editor {
     pub fn new(
-        mut area: Rect,
+        area: Rect,
         theme_loader: Arc<theme::Loader>,
         syn_loader: Arc<syntax::Loader>,
         config: Arc<dyn DynAccess<Config>>,
@@ -940,7 +956,7 @@ impl Editor {
         let auto_pairs = (&conf.auto_pairs).into();
 
         // HAXX: offset the render area height by 1 to account for prompt/commandline
-        area.height -= 1;
+        //area.height -= 1;
 
         Self {
             mode: Mode::Normal,
@@ -964,10 +980,12 @@ impl Editor {
             syn_loader,
             theme_loader,
             last_theme: None,
+            dark_theme: false,
             last_selection: None,
             registers: Registers::default(),
             clipboard_provider: get_clipboard_provider(),
             status_msg: None,
+            status_msg_timer: Box::pin(sleep(conf.status_msg_timeout)),
             autoinfo: None,
             idle_timer: Box::pin(sleep(conf.idle_timeout)),
             last_motion: None,
@@ -980,6 +998,7 @@ impl Editor {
             needs_redraw: false,
             cursor_cache: Cell::new(None),
             completion_request_handle: None,
+            display_inlay_hints: false,
         }
     }
 
@@ -1024,6 +1043,21 @@ impl Editor {
         let status = status.into();
         log::debug!("editor status: {}", status);
         self.status_msg = Some((status, Severity::Info));
+        self.reset_status_msg_timer();
+    }
+
+    pub fn clear_status_msg_timer(&mut self) {
+        // equivalent to internal Instant::far_future() (30 years)
+        self.status_msg_timer
+            .as_mut()
+            .reset(Instant::now() + Duration::from_secs(86400 * 365 * 30));
+    }
+
+    pub fn reset_status_msg_timer(&mut self) {
+        let config = self.config();
+        self.status_msg_timer
+            .as_mut()
+            .reset(Instant::now() + config.status_msg_timeout);
     }
 
     #[inline]
@@ -1031,6 +1065,7 @@ impl Editor {
         let error = error.into();
         log::error!("editor error: {}", error);
         self.status_msg = Some((error, Severity::Error));
+        self.reset_status_msg_timer();
     }
 
     #[inline]
@@ -1071,6 +1106,19 @@ impl Editor {
 
         let scopes = theme.scopes();
         self.syn_loader.set_scopes(scopes.to_vec());
+
+	    let background_style = theme.get("ui.background");
+	    if let Some(color) = background_style.bg {
+            match color {
+                theme::Color::Rgb(r, g, b) => {
+                    let sum : u32 = r as u32 + g as u32 + b as u32;
+                    let average = sum / 3;
+
+                    self.dark_theme = average < 127;
+                },
+                _ => (),
+            }
+        }
 
         match preview {
             ThemeAction::Preview => {
@@ -1164,7 +1212,8 @@ impl Editor {
             let doc = doc_mut!(self, &view.doc);
             view.sync_changes(doc);
             view.gutters = config.gutters.clone();
-            view.ensure_cursor_in_view(doc, config.scrolloff)
+            // gavlig: this doesnt work well when we scrolled far away from cursor and zoomed in/out
+            // view.ensure_cursor_in_view(doc, config.scrolloff)
         }
     }
 
@@ -1569,6 +1618,37 @@ impl Editor {
         }
     }
 
+    // cursor position is in text space, not screen space
+    pub fn cursor_ext(&self) -> Vec<Position> {
+        let (view, doc) = current_ref!(self);
+
+        let text = doc.text().slice(..);
+
+        let selection = doc.selection(view.id);
+
+        let mut cursor_positions = Vec::new();
+
+        for range in selection.iter() {
+
+            let range = range.min_width_1(text);
+            let cursor_char = range.cursor(text);
+            let line = text.char_to_line(cursor_char);
+
+            let mut pos = Position { row: line, col: 0 };
+
+            if let Some(screen_pos) = view.screen_coords_at_pos(doc, text, cursor_char) {
+                let inner = view.inner_area(doc);
+
+                // we only use screen_coords_at_pos for column currently. kind of redundant
+                pos.col = screen_pos.col + inner.x as usize;
+            }
+
+            cursor_positions.push(pos);
+        }
+
+        cursor_positions
+    }
+
     /// Closes language servers with timeout. The default timeout is 10000 ms, use
     /// `timeout` parameter to override this.
     pub async fn close_language_servers(
@@ -1620,6 +1700,10 @@ impl Editor {
 
                 _ = &mut self.idle_timer  => {
                     return EditorEvent::IdleTimer
+                }
+
+                _ = &mut self.status_msg_timer => {
+                    return EditorEvent::StatusMsgTimer
                 }
             }
         }
@@ -1678,6 +1762,10 @@ impl Editor {
         self.debugger
             .as_ref()
             .and_then(|debugger| debugger.current_stack_frame())
+    }
+
+    pub fn display_inlay_hints(&self) -> bool {
+        self.config().lsp.display_inlay_hints || self.display_inlay_hints
     }
 }
 

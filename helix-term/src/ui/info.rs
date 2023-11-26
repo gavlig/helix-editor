@@ -1,7 +1,7 @@
-use crate::compositor::{Component, Context};
+use crate::compositor::{Component, Context, ContextExt, surface_by_id_mut};
 use helix_view::graphics::{Margin, Rect};
 use helix_view::info::Info;
-use tui::buffer::Buffer as Surface;
+use tui::buffer::{Buffer as Surface, SurfaceFlags};
 use tui::widgets::{Block, Borders, Paragraph, Widget};
 
 impl Component for Info {
@@ -34,5 +34,34 @@ impl Component for Info {
         Paragraph::new(self.text.as_str())
             .style(text_style)
             .render(inner, surface);
+    }
+
+    fn render_ext(&mut self, ctx: &mut ContextExt) {
+        let id = String::from(self.id().unwrap());
+		let info_area = self.area();
+        let surface = surface_by_id_mut(&id, info_area, SurfaceFlags::default(), ctx.surfaces);
+
+        let text_style = ctx.vanilla.editor.theme.get("ui.text.info");
+        let popup_style = ctx.vanilla.editor.theme.get("ui.popup.info");
+
+
+        surface.clear_with(info_area, popup_style);
+
+        let block = Block::default()
+            .title(self.title.as_str())
+            .borders(Borders::ALL)
+            .border_style(popup_style);
+
+        let margin = Margin::horizontal(1);
+        let inner = block.inner(info_area).inner(&margin);
+        block.render(info_area, surface);
+
+        Paragraph::new(self.text.as_str())
+            .style(text_style)
+            .render(inner, surface);
+    }
+
+    fn id(&self) -> Option<&'static str> {
+        Some("info-component")
     }
 }

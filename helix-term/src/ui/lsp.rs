@@ -5,7 +5,9 @@ use helix_view::graphics::{Margin, Rect, Style};
 use tui::buffer::Buffer;
 use tui::widgets::{BorderType, Paragraph, Widget, Wrap};
 
-use crate::compositor::{Component, Compositor, Context};
+use crate::compositor::{Component, Compositor, Context, ContextExt, Event, EventResult};
+use crate::{ctrl, key};
+use crate::commands;
 
 use crate::ui::Markdown;
 
@@ -43,7 +45,11 @@ impl SignatureHelp {
     }
 
     pub fn visible_popup(compositor: &mut Compositor) -> Option<&mut Popup<Self>> {
-        compositor.find_id::<Popup<Self>>(Self::ID)
+        compositor.find_id_mut::<Popup<Self>>(Self::ID)
+    }
+
+    pub fn label(&self) -> &String {
+        &self.signature
     }
 }
 
@@ -99,6 +105,14 @@ impl Component for SignatureHelp {
         sig_doc_para.render(sig_doc_area.inner(&margin), surface);
     }
 
+    fn render_ext(&mut self, _ctx: &mut ContextExt) {
+        assert!(false, "not implemented");
+    }
+
+    fn id(&self) -> Option<&'static str> {
+        Some(SignatureHelp::ID)
+    }
+
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
         const PADDING: u16 = 2;
         const SEPARATOR_HEIGHT: u16 = 1;
@@ -133,5 +147,31 @@ impl Component for SignatureHelp {
         };
 
         Some((width + PADDING, height + PADDING))
+    }
+
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+        let key = match event {
+            Event::Key(event) => *event,
+            _ => return EventResult::Ignored(None),
+        };
+
+        match key {
+            key!(Esc) | ctrl!('c') => (),
+            // update self on key press
+            _ => {
+                let mut commands_cx = commands::Context {
+                    editor: cx.editor,
+                    count: None,
+                    register: None,
+                    callback: None,
+                    on_next_key_callback: None,
+                    jobs: cx.jobs,
+                };
+
+                commands::signature_help_impl(&mut commands_cx, commands::SignatureHelpInvoked::Automatic);
+            },
+        }
+
+        EventResult::Ignored(None)
     }
 }

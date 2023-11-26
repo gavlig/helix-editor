@@ -1,4 +1,4 @@
-use crate::compositor::{Component, Context};
+use crate::compositor::{Component, Context, ContextExt};
 use tui::{
     buffer::Buffer as Surface,
     text::{Span, Spans, Text},
@@ -340,6 +340,18 @@ impl Component for Markdown {
 
         let margin = Margin::all(1);
         par.render(area.inner(&margin), surface);
+    }
+
+	fn render_ext(&mut self, _ctx: &mut ContextExt) {
+        assert!(false, "not implemented")
+        // let id = String::from(self.id().unwrap());
+        // let surface = surface_by_id_mut(&id, ctx.surface_area, SurfaceFlags::default(), ctx.surfaces);
+
+        // self.render(ctx.surface_area, surface, &mut ctx.vanilla);
+    }
+
+    fn id(&self) -> Option<&'static str> {
+        Some("markdown-component")
     }
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {

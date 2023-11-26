@@ -5,7 +5,7 @@ use tree_sitter::{Node, QueryCursor};
 
 use crate::{
     char_idx_at_visual_offset,
-    chars::{categorize_char, char_is_line_ending, CharCategory},
+    chars::{categorize_char, char_is_line_ending, char_is_word, CharCategory},
     doc_formatter::TextFormat,
     graphemes::{
         next_grapheme_boundary, nth_next_grapheme_boundary, nth_prev_grapheme_boundary,
@@ -193,12 +193,21 @@ pub fn move_prev_word_end(slice: RopeSlice, range: Range, count: usize) -> Range
     word_move(slice, range, count, WordMotionTarget::PrevWordEnd)
 }
 
+pub fn move_cur_word_start(slice: RopeSlice, range: Range, count: usize) -> Range {
+    word_move(slice, range, count, WordMotionTarget::CurWordStart)
+}
+
+pub fn move_cur_word_end(slice: RopeSlice, range: Range, count: usize) -> Range {
+    word_move(slice, range, count, WordMotionTarget::CurWordEnd)
+}
+
 fn word_move(slice: RopeSlice, range: Range, count: usize, target: WordMotionTarget) -> Range {
     let is_prev = matches!(
         target,
         WordMotionTarget::PrevWordStart
             | WordMotionTarget::PrevLongWordStart
             | WordMotionTarget::PrevWordEnd
+            | WordMotionTarget::CurWordStart
     );
 
     // Special-case early-out.
@@ -377,6 +386,8 @@ pub enum WordMotionTarget {
     NextLongWordStart,
     NextLongWordEnd,
     PrevLongWordStart,
+    CurWordStart,
+    CurWordEnd,
 }
 
 pub trait CharHelpers {
@@ -393,6 +404,7 @@ impl CharHelpers for Chars<'_> {
             WordMotionTarget::PrevWordStart
                 | WordMotionTarget::PrevLongWordStart
                 | WordMotionTarget::PrevWordEnd
+				| WordMotionTarget::CurWordStart
         );
 
         // Reverse the iterator if needed for the motion direction.
@@ -480,12 +492,16 @@ fn reached_target(target: WordMotionTarget, prev_ch: char, next_ch: char) -> boo
                 && (!prev_ch.is_whitespace() || char_is_line_ending(next_ch))
         }
         WordMotionTarget::NextLongWordStart => {
-            is_long_word_boundary(prev_ch, next_ch)
+        is_long_word_boundary(prev_ch, next_ch)
                 && (char_is_line_ending(next_ch) || !next_ch.is_whitespace())
         }
         WordMotionTarget::NextLongWordEnd | WordMotionTarget::PrevLongWordStart => {
             is_long_word_boundary(prev_ch, next_ch)
                 && (!prev_ch.is_whitespace() || char_is_line_ending(next_ch))
+        }
+        WordMotionTarget::CurWordStart | WordMotionTarget::CurWordEnd => {
+            is_word_boundary(prev_ch, next_ch)
+                && (char_is_line_ending(next_ch) || !char_is_word(next_ch))
         }
     }
 }

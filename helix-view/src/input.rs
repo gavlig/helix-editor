@@ -33,6 +33,8 @@ pub struct MouseEvent {
 pub enum MouseEventKind {
     /// Pressed mouse button. Contains the button that was pressed.
     Down(MouseButton),
+	/// Double clicked mouse button. Contains the button that was pressed.
+    DoubleClick(MouseButton),
     /// Released mouse button. Contains the button that was released.
     Up(MouseButton),
     /// Moved the mouse cursor while pressing the contained mouse button.

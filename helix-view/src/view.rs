@@ -112,6 +112,7 @@ pub struct ViewPosition {
 pub struct View {
     pub id: ViewId,
     pub offset: ViewPosition,
+    pub offset_external: ViewPosition,
     pub area: Rect,
     pub doc: DocumentId,
     pub jumps: JumpList,
@@ -153,6 +154,11 @@ impl View {
                 horizontal_offset: 0,
                 vertical_offset: 0,
             },
+            offset_external: ViewPosition {
+                anchor: 0,
+                horizontal_offset: 0,
+                vertical_offset: 0,
+            },
             area: Rect::default(), // will get calculated upon inserting into tree
             jumps: JumpList::new((doc, Selection::point(0))), // TODO: use actual sel
             docs_access_history: Vec::new(),
@@ -171,11 +177,13 @@ impl View {
     }
 
     pub fn inner_area(&self, doc: &Document) -> Rect {
-        self.area.clip_left(self.gutter_offset(doc)).clip_bottom(1) // -1 for statusline
+        // self.area.clip_left(self.gutter_offset(doc)).clip_bottom(1) // -1 for statusline
+		self.area.clip_left(self.gutter_offset(doc))
     }
 
     pub fn inner_height(&self) -> usize {
-        self.area.clip_bottom(1).height.into() // -1 for statusline
+        // self.area.clip_bottom(1).height.into() // -1 for statusline
+		self.area.height.into()
     }
 
     pub fn inner_width(&self, doc: &Document) -> u16 {

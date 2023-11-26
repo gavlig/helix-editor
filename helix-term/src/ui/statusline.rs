@@ -160,6 +160,7 @@ where
         helix_view::editor::StatusLineElement::Separator => render_separator,
         helix_view::editor::StatusLineElement::Spacer => render_spacer,
         helix_view::editor::StatusLineElement::VersionControl => render_version_control,
+		helix_view::editor::StatusLineElement::CurrentSymbol => render_current_symbol,
     }
 }
 
@@ -489,4 +490,25 @@ where
         .to_string();
 
     write(context, head, None);
+}
+
+fn render_current_symbol<F>(context: &mut RenderContext, write: F)
+where
+    F: Fn(&mut RenderContext, String, Option<Style>) + Copy,
+{
+    let mut symbol_string = String::new();
+    let symbols_under_cursor = context.doc.symbols_under_cursor(); // there can be nesting of symbols like functions in interfaces/classes and so on so we operate with Vec
+
+    if !symbols_under_cursor.is_empty() {
+        let last_symbol = symbols_under_cursor.last().unwrap();
+        let first_symbol = symbols_under_cursor.first().unwrap();
+        symbol_string.push_str(format!("> {:?}: {}", last_symbol.kind, first_symbol.name).as_str());
+
+        let symbols_cnt = symbols_under_cursor.len();
+        for symbol_index in 1 .. symbols_cnt {
+            symbol_string.push_str(format!("::{}", symbols_under_cursor[symbol_index].name).as_str());
+        }
+    }
+
+    write(context, symbol_string, None);
 }

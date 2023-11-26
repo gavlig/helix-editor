@@ -1,5 +1,5 @@
-use crate::compositor::{Component, Context};
-use tui::buffer::Buffer as Surface;
+use crate::compositor::{Component, Context, ContextExt, surface_by_id_mut};
+use tui::buffer::{Buffer as Surface, SurfaceFlags};
 
 use helix_view::graphics::Rect;
 
@@ -37,6 +37,23 @@ impl Component for Text {
         // .scroll(x, y) offsets
 
         par.render(area, surface);
+    }
+
+    fn render_ext(&mut self, ctx: &mut ContextExt) {
+        use tui::widgets::{Paragraph, Widget, Wrap};
+
+        let par = Paragraph::new(self.contents.clone()).wrap(Wrap { trim: false });
+        // .scroll(x, y) offsets
+
+        let id = String::from(self.id().unwrap());
+        let area = Rect { width: self.size.0, height: self.size.1, ..Default::default() };
+
+        let surface = surface_by_id_mut(&id, area, SurfaceFlags::default(), ctx.surfaces);
+        par.render(area, surface);
+    }
+
+    fn id(&self) -> Option<&'static str> {
+        Some("text-component")
     }
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {

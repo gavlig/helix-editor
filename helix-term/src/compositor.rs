@@ -4,7 +4,7 @@
 use helix_core::Position;
 use helix_view::graphics::{CursorKind, Rect};
 
-use tui::buffer::Buffer as Surface;
+use tui::buffer::{Buffer as Surface, SurfaceFlags};
 
 pub type Callback = Box<dyn FnOnce(&mut Compositor, &mut Context)>;
 pub type SyncCallback = Box<dyn FnOnce(&mut Compositor, &mut Context) + Sync>;
@@ -36,6 +36,50 @@ impl<'a> Context<'a> {
     }
 }
 
+pub struct ContextExt<'a> {
+    pub vanilla: Context<'a>,
+    pub surfaces: &'a mut SurfacesMap,
+    pub editor_area: Rect,
+    pub screen_area: Rect,
+}
+
+impl<'a> ContextExt<'a> {
+    /// Waits on all pending jobs, and then tries to flush all pending write
+    /// operations for all documents.
+    pub fn block_try_flush_writes(&mut self) -> anyhow::Result<()> {
+        tokio::task::block_in_place(|| helix_lsp::block_on(self.vanilla.jobs.finish(self.vanilla.editor, None)))?;
+        tokio::task::block_in_place(|| helix_lsp::block_on(self.vanilla.editor.flush_writes()))?;
+        Ok(())
+    }
+}
+
+pub type HashMap<K, V> = hashbrown::HashMap<K, V>;
+
+pub type SurfacesMap = HashMap<String, Surface>;
+
+pub fn surface_by_id_mut<'a>(id: &String, area: Rect, spatial_flags: SurfaceFlags, surfaces: &'a mut SurfacesMap) -> &'a mut Surface {
+    if surfaces.contains_key(id) {
+        let surface = surfaces.get_mut(id).unwrap();
+        if surface.area != area {
+            surface.resize(area);
+            surface.reset();
+        }
+        surface
+    } else {
+        let new_surface = Surface::empty_with_spatial(area, spatial_flags);
+        surfaces.insert_unique_unchecked(id.clone(), new_surface).1
+    }
+}
+
+pub fn surface_by_id<'a>(id: &String, area: Rect, spatial_flags: SurfaceFlags, surfaces: &'a mut SurfacesMap) -> &'a Surface {
+    if surfaces.contains_key(id) {
+        surfaces.get(id).unwrap()
+    } else {
+        let new_surface = Surface::empty_with_spatial(area, spatial_flags);
+        surfaces.insert_unique_unchecked(id.clone(), new_surface).1
+    }
+}
+
 pub trait Component: Any + AnyComponent {
     /// Process input events, return true if handled.
     fn handle_event(&mut self, _event: &Event, _ctx: &mut Context) -> EventResult {
@@ -51,9 +95,16 @@ pub trait Component: Any + AnyComponent {
     /// Render the component onto the provided surface.
     fn render(&mut self, area: Rect, frame: &mut Surface, ctx: &mut Context);
 
+    /// Render the component onto a separate surface to be processed in the outside app
+    fn render_ext(&mut self, cx: &mut ContextExt);
+
     /// Get cursor position and cursor kind.
     fn cursor(&self, _area: Rect, _ctx: &Editor) -> (Option<Position>, CursorKind) {
         (None, CursorKind::Hidden)
+    }
+
+    fn cursor_ext(&self, _editor: &Editor) -> Option<(Vec<Position>, &str)> {
+        None
     }
 
     /// May be used by the parent component to compute the child area.
@@ -75,7 +126,7 @@ pub trait Component: Any + AnyComponent {
 }
 
 pub struct Compositor {
-    layers: Vec<Box<dyn Component>>,
+    pub layers: Vec<Box<dyn Component>>,
     area: Rect,
 
     pub(crate) last_picker: Option<Box<dyn Component>>,
@@ -109,7 +160,7 @@ impl Compositor {
     /// Replace a component that has the given `id` with the new layer and if
     /// no component is found, push the layer normally.
     pub fn replace_or_push<T: Component>(&mut self, id: &'static str, layer: T) {
-        if let Some(component) = self.find_id(id) {
+        if let Some(component) = self.find_id_mut(id) {
             *component = layer;
         } else {
             self.push(Box::new(layer))
@@ -171,6 +222,12 @@ impl Compositor {
         }
     }
 
+    pub fn render_ext(&mut self, cx: &mut ContextExt) {
+        for layer in &mut self.layers {
+            layer.render_ext(cx);
+        }
+    }
+
     pub fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
         for layer in self.layers.iter().rev() {
             if let (Some(pos), kind) = layer.cursor(area, editor) {
@@ -178,6 +235,16 @@ impl Compositor {
             }
         }
         (None, CursorKind::Hidden)
+    }
+
+    pub fn cursor_ext(&self, editor: &Editor) -> Option<(Vec<Position>, &str)> {
+        for layer in self.layers.iter().rev() {
+            if let Some(cursor_ext) = layer.cursor_ext(editor) {
+                return Some(cursor_ext);
+            }
+        }
+
+        None
     }
 
     pub fn has_component(&self, type_name: &str) -> bool {
@@ -194,7 +261,14 @@ impl Compositor {
             .and_then(|component| component.as_any_mut().downcast_mut())
     }
 
-    pub fn find_id<T: 'static>(&mut self, id: &'static str) -> Option<&mut T> {
+    pub fn find_id<T: 'static>(&self, id: &'static str) -> Option<&T> {
+        self.layers
+            .iter()
+            .find(|component| component.id() == Some(id))
+            .and_then(|component| component.as_any().downcast_ref())
+    }
+
+    pub fn find_id_mut<T: 'static>(&mut self, id: &'static str) -> Option<&mut T> {
         self.layers
             .iter_mut()
             .find(|component| component.id() == Some(id))
