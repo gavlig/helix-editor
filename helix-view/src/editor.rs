@@ -403,9 +403,9 @@ impl Default for StatusLineConfig {
             left: vec![
                 E::Mode,
                 E::Spinner,
+                E::FileModificationIndicator,
                 E::FileName,
                 E::CurrentSymbol,
-                E::FileModificationIndicator,
             ],
             center: vec![],
             right: vec![E::Diagnostics, E::Selections, E::Position, E::FileEncoding],
