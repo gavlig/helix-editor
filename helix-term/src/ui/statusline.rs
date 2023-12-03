@@ -218,6 +218,11 @@ where
             .to_string(),
         None,
     );
+    write(
+        context,
+        " ".into(),
+        None,
+    )
 }
 
 fn render_diagnostics<F>(context: &mut RenderContext, write: F)
@@ -433,14 +438,9 @@ fn render_file_modification_indicator<F>(context: &mut RenderContext, write: F)
 where
     F: Fn(&mut RenderContext, String, Option<Style>) + Copy,
 {
-    let title = (if context.doc.is_modified() {
-        "[+]"
-    } else {
-        "   "
-    })
-    .to_string();
-
-    write(context, title, None);
+    if context.doc.is_modified() {
+        write(context, "[+]".into(), None);
+    };
 }
 
 fn render_file_base_name<F>(context: &mut RenderContext, write: F)
@@ -502,7 +502,7 @@ where
     if !symbols_under_cursor.is_empty() {
         let last_symbol = symbols_under_cursor.last().unwrap();
         let first_symbol = symbols_under_cursor.first().unwrap();
-        symbol_string.push_str(format!("> {:?}: {}", last_symbol.kind, first_symbol.name).as_str());
+        symbol_string.push_str(format!(" > {:?}: {}", last_symbol.kind, first_symbol.name).as_str());
 
         let symbols_cnt = symbols_under_cursor.len();
         for symbol_index in 1 .. symbols_cnt {
