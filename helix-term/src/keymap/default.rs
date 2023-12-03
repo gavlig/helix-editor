@@ -407,6 +407,9 @@ pub fn default() -> HashMap<Mode, Keymap> {
 
         "C-space" => completion,
         "C-S-space" => signature_help,
+
+        "C-c" => yank_main_selection_to_clipboard,
+        "C-v" => paste_clipboard_before,
     });
     hashmap!(
         Mode::Normal => Keymap::new(normal),
