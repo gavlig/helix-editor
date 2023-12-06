@@ -92,7 +92,20 @@ impl ui::menu::Item for lsp::SymbolInformation {
     type Data = Option<lsp::Url>;
 
     fn format(&self, current_doc_path: &Self::Data) -> Row {
-        if current_doc_path.as_ref() == Some(&self.location.uri) {
+        #[cfg(not(windows))]
+        let paths_are_equal = current_doc_path.as_ref() == Some(&self.location.uri);
+        #[cfg(windows)]
+        // we need to force lowercase because windows filesystem doesnt care for upper or lower case
+        let paths_are_equal = if let Some(path) = current_doc_path {
+            let path0 = path.as_str().to_lowercase();
+            let path1 = self.location.uri.as_str().to_lowercase();
+
+            path0 == path1
+        } else {
+            false
+        };
+
+        if paths_are_equal {
             let string = format!("{}{}", if self.container_name.is_some() {"> "} else {""}, self.name);
             let kind = format!("{:?}", self.kind);
             format!("| {:<17}| {:<50}|", kind, string).into()
