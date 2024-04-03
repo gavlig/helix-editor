@@ -1458,17 +1458,25 @@ impl EditorView {
 
             MouseEventKind::Drag(MouseButton::Left) => {
                 let (view, doc) = current!(cxt.editor);
+                let view_id = view.id;
 
                 let pos = match view.pos_at_screen_coords(doc, row, column, true) {
                     Some(pos) => pos,
                     None => return EventResult::Ignored(None),
                 };
 
-                let mut selection = doc.selection(view.id).clone();
-                let primary = selection.primary_mut();
-                *primary = primary.put_cursor(doc.text().slice(..), pos, true);
-                doc.set_selection(view.id, selection);
-                let view_id = view.id;
+                // multiple cursor spawning
+                if modifiers == KeyModifiers::ALT {
+                    let selection = doc.selection(view_id).clone();
+                    if selection.find_pos_index(pos).is_none() {
+                        doc.set_selection(view_id, selection.push(Range::point(pos)));
+                    }
+                } else {
+                    let mut selection = doc.selection(view_id).clone();
+                    let primary = selection.primary_mut();
+                    *primary = primary.put_cursor(doc.text().slice(..), pos, true);
+                    doc.set_selection(view.id, selection);
+                }
                 cxt.editor.ensure_cursor_in_view(view_id);
                 EventResult::Consumed(None)
             }
