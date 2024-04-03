@@ -442,6 +442,15 @@ impl Selection {
         self
     }
 
+    /// Removes a rangle from selection only if there are more than 1 ranges in it
+    pub fn remove_safe(self, index: usize) -> Self {
+        if self.ranges.len() == 1 {
+            return self
+        }
+
+        self.remove(index)
+    }
+
     /// Replace a range in the selection with a new range.
     pub fn replace(mut self, index: usize, range: Range) -> Self {
         self.ranges[index] = range;
@@ -646,6 +655,27 @@ impl Selection {
                 (_, None) => {
                     // no elements from `other` left to match, `self` contains `other`
                     return true;
+                }
+            }
+        }
+    }
+
+    // returns index of a range if it's len is 1 and it consists of given pos
+    pub fn find_pos_index(&self, pos: usize) -> Option<usize> {
+        let mut iter_self = self.iter().enumerate();
+        let mut ele_self = iter_self.next();
+
+        loop {
+            match ele_self {
+                Some((index, range)) => {
+                    if range.len() == 1 && range.anchor == pos {
+                        return Some(index);
+                    }
+
+                    ele_self = iter_self.next();
+                },
+                None => {
+                    return None
                 }
             }
         }

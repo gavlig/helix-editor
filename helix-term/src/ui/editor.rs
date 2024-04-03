@@ -1380,7 +1380,11 @@ impl EditorView {
                     // multiple cursor spawning
                     if modifiers == KeyModifiers::ALT {
                         let selection = doc.selection(view_id).clone();
-                        doc.set_selection(view_id, selection.push(Range::point(pos)));
+                        if let Some(found_index) = selection.find_pos_index(pos) {
+                            doc.set_selection(view_id, selection.remove_safe(found_index));
+                        } else {
+                            doc.set_selection(view_id, selection.push(Range::point(pos)));
+                        }
                     // selection extension to new mouse pos
                     } else if modifiers == KeyModifiers::SHIFT {
                         let extend = true;
