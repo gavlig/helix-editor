@@ -324,7 +324,7 @@ impl Default for Keymap {
 }
 
 pub struct Keymaps {
-    pub map: Box<dyn DynAccess<HashMap<Mode, Keymap>>>,
+    pub map: Box<dyn DynAccess<HashMap<Mode, Keymap>> + Sync + Send>,
     /// Stores pending keys waiting for the next key. This is relative to a
     /// sticky node if one is in use.
     state: Vec<KeyEvent>,
@@ -333,7 +333,7 @@ pub struct Keymaps {
 }
 
 impl Keymaps {
-    pub fn new(map: Box<dyn DynAccess<HashMap<Mode, Keymap>>>) -> Self {
+    pub fn new(map: Box<dyn DynAccess<HashMap<Mode, Keymap>> + Sync + Send>) -> Self {
         Self {
             map,
             state: Vec::new(),

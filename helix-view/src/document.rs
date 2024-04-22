@@ -15,12 +15,10 @@ use ::parking_lot::Mutex;
 use serde::de::{self, Deserialize, Deserializer};
 use serde::Serialize;
 use std::borrow::Cow;
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
@@ -160,8 +158,8 @@ pub struct Document {
     // It can be used as a cell where we will take it out to get some parts of the history and put
     // it back as it separated from the edits. We could split out the parts manually but that will
     // be more troublesome.
-    pub history: Cell<History>,
-    pub config: Arc<dyn DynAccess<Config>>,
+    pub history: Mutex<History>,
+    pub config: Arc<dyn DynAccess<Config> + Sync + Send>,
 
     savepoints: Vec<Weak<SavePoint>>,
 
@@ -208,22 +206,22 @@ pub struct DocumentInlayHints {
     pub id: DocumentInlayHintsId,
 
     /// Inlay hints of `TYPE` kind, if any.
-    pub type_inlay_hints: Rc<[InlineAnnotation]>,
+    pub type_inlay_hints: Arc<[InlineAnnotation]>,
 
     /// Inlay hints of `PARAMETER` kind, if any.
-    pub parameter_inlay_hints: Rc<[InlineAnnotation]>,
+    pub parameter_inlay_hints: Arc<[InlineAnnotation]>,
 
     /// Inlay hints that are neither `TYPE` nor `PARAMETER`.
     ///
     /// LSPs are not required to associate a kind to their inlay hints, for example Rust-Analyzer
     /// currently never does (February 2023) and the LSP spec may add new kinds in the future that
     /// we want to display even if we don't have some special highlighting for them.
-    pub other_inlay_hints: Rc<[InlineAnnotation]>,
+    pub other_inlay_hints: Arc<[InlineAnnotation]>,
 
     /// Inlay hint padding. When creating the final `TextAnnotations`, the `before` padding must be
     /// added first, then the regular inlay hints, then the `after` padding.
-    pub padding_before_inlay_hints: Rc<[InlineAnnotation]>,
-    pub padding_after_inlay_hints: Rc<[InlineAnnotation]>,
+    pub padding_before_inlay_hints: Arc<[InlineAnnotation]>,
+    pub padding_after_inlay_hints: Arc<[InlineAnnotation]>,
 }
 
 impl DocumentInlayHints {
@@ -231,11 +229,11 @@ impl DocumentInlayHints {
     pub fn empty_with_id(id: DocumentInlayHintsId) -> Self {
         Self {
             id,
-            type_inlay_hints: Rc::new([]),
-            parameter_inlay_hints: Rc::new([]),
-            other_inlay_hints: Rc::new([]),
-            padding_before_inlay_hints: Rc::new([]),
-            padding_after_inlay_hints: Rc::new([]),
+            type_inlay_hints: Arc::new([]),
+            parameter_inlay_hints: Arc::new([]),
+            other_inlay_hints: Arc::new([]),
+            padding_before_inlay_hints: Arc::new([]),
+            padding_after_inlay_hints: Arc::new([]),
         }
     }
 }
@@ -589,7 +587,7 @@ impl Document {
     pub fn from(
         text: Rope,
         encoding_with_bom_info: Option<(&'static Encoding, bool)>,
-        config: Arc<dyn DynAccess<Config>>,
+        config: Arc<dyn DynAccess<Config> + Sync + Send>,
     ) -> Self {
         let (encoding, has_bom) = encoding_with_bom_info.unwrap_or((encoding::UTF_8, false));
         let changes = ChangeSet::new(&text);
@@ -618,7 +616,7 @@ impl Document {
             diagnostics: Vec::new(),
             diagnostics_version: 0,
             version: 0,
-            history: Cell::new(History::default()),
+            history: Mutex::new(History::default()),
             savepoints: Vec::new(),
             last_saved_time: SystemTime::now(),
             last_saved_revision: 0,
@@ -630,7 +628,7 @@ impl Document {
             focused_at: std::time::Instant::now(),
         }
     }
-    pub fn default(config: Arc<dyn DynAccess<Config>>) -> Self {
+    pub fn default(config: Arc<dyn DynAccess<Config> + Sync + Send>) -> Self {
         let text = Rope::from(DEFAULT_LINE_ENDING.as_str());
         Self::from(text, None, config)
     }
@@ -641,7 +639,7 @@ impl Document {
         path: &Path,
         encoding: Option<&'static Encoding>,
         config_loader: Option<Arc<syntax::Loader>>,
-        config: Arc<dyn DynAccess<Config>>,
+        config: Arc<dyn DynAccess<Config> + Sync + Send>,
     ) -> Result<Self, Error> {
         // Open the file if it exists, otherwise assume it is a new file (and thus empty).
         let (rope, encoding, has_bom) = if path.exists() {
@@ -1141,8 +1139,8 @@ impl Document {
                 .sort_unstable_by_key(|diagnostic| diagnostic.range);
 
             // Update the inlay hint annotations' positions, helping ensure they are displayed in the proper place
-            let apply_inlay_hint_changes = |annotations: &mut Rc<[InlineAnnotation]>| {
-                if let Some(data) = Rc::get_mut(annotations) {
+            let apply_inlay_hint_changes = |annotations: &mut Arc<[InlineAnnotation]>| {
+                if let Some(data) = Arc::get_mut(annotations) {
                     for inline in data.iter_mut() {
                         inline.char_idx = changes.map_pos(inline.char_idx, Assoc::After);
                     }
@@ -1207,14 +1205,17 @@ impl Document {
     }
 
     fn undo_redo_impl(&mut self, view: &mut View, undo: bool) -> bool {
-        let mut history = self.history.take();
-        let txn = if undo { history.undo() } else { history.redo() };
+        let txn = {
+            let mut history_guard = self.history.lock();
+            let txn_option = if undo { history_guard.undo() } else { history_guard.redo() };
+            // gavlig: had to clone the transaction here, there is no clean way to do the same what Cell does and keep it Sync + Send
+            if let Some(txn) = txn_option { Some(txn.clone()) } else { None }
+        };
         let success = if let Some(txn) = txn {
-            self.apply_impl(txn, view.id)
+            self.apply_impl(&txn, view.id)
         } else {
             false
         };
-        self.history.set(history);
 
         if success {
             // reset changeset to fix len
@@ -1271,10 +1272,13 @@ impl Document {
     }
 
     fn earlier_later_impl(&mut self, view: &mut View, uk: UndoKind, earlier: bool) -> bool {
-        let txns = if earlier {
-            self.history.get_mut().earlier(uk)
-        } else {
-            self.history.get_mut().later(uk)
+        let txns = {
+            let history = self.history.get_mut();
+            if earlier {
+                history.earlier(uk)
+            } else {
+                history.later(uk)
+            }
         };
         let mut success = false;
         for txn in txns {
@@ -1317,9 +1321,7 @@ impl Document {
         // HAXX: we need to reconstruct the state as it was before the changes..
         let old_state = self.old_state.take().expect("no old_state available");
 
-        let mut history = self.history.take();
-        history.commit_revision(&transaction, &old_state);
-        self.history.set(history);
+        self.history.get_mut().commit_revision(&transaction, &old_state);
 
         // Update jumplist entries in the view.
         view.apply(&transaction, self);
@@ -1331,9 +1333,7 @@ impl Document {
 
     /// If there are unsaved modifications.
     pub fn is_modified(&self) -> bool {
-        let history = self.history.take();
-        let current_revision = history.current_revision();
-        self.history.set(history);
+        let current_revision = self.history.lock().current_revision();
         log::debug!(
             "id {} modified - last saved: {}, current: {}",
             self.id,
@@ -1345,9 +1345,7 @@ impl Document {
 
     /// Save modifications to history, and so [`Self::is_modified`] will return false.
     pub fn reset_modified(&mut self) {
-        let history = self.history.take();
-        let current_revision = history.current_revision();
-        self.history.set(history);
+        let current_revision = self.history.lock().current_revision();
         self.last_saved_revision = current_revision;
     }
 
@@ -1370,9 +1368,7 @@ impl Document {
 
     /// Get the current revision number
     pub fn get_current_revision(&self) -> usize {
-        let history = self.history.take();
-        let current_revision = history.current_revision();
-        self.history.set(history);
+        let current_revision = self.history.lock().current_revision();
         current_revision
     }
 

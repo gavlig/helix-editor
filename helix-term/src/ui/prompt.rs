@@ -15,11 +15,11 @@ use helix_view::{
     Editor,
 };
 
-type PromptCharHandler = Box<dyn Fn(&mut Prompt, char, &Context)>;
+type PromptCharHandler = Box<dyn Fn(&mut Prompt, char, &Context) + Sync + Send>;
 pub type Completion = (RangeFrom<usize>, Cow<'static, str>);
-type CompletionFn = Box<dyn FnMut(&Editor, &str) -> Vec<Completion>>;
-type CallbackFn = Box<dyn FnMut(&mut Context, &str, PromptEvent)>;
-pub type DocFn = Box<dyn Fn(&str) -> Option<Cow<str>>>;
+type CompletionFn = Box<dyn FnMut(&Editor, &str) -> Vec<Completion> + Sync + Send>;
+type CallbackFn = Box<dyn FnMut(&mut Context, &str, PromptEvent) + Sync + Send>;
+pub type DocFn = Box<dyn Fn(&str) -> Option<Cow<str>> + Sync + Send>;
 
 pub struct Prompt {
     pub prompt: Cow<'static, str>,
@@ -72,8 +72,8 @@ impl Prompt {
     pub fn new(
         prompt: Cow<'static, str>,
         history_register: Option<char>,
-        completion_fn: impl FnMut(&Editor, &str) -> Vec<Completion> + 'static,
-        callback_fn: impl FnMut(&mut Context, &str, PromptEvent) + 'static,
+        completion_fn: impl FnMut(&Editor, &str) -> Vec<Completion> + 'static + Sync + Send,
+        callback_fn: impl FnMut(&mut Context, &str, PromptEvent) + 'static + Sync + Send,
     ) -> Self {
         Self {
             prompt,

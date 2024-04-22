@@ -36,7 +36,7 @@ impl DiffProvider for Dummy {
 }
 
 pub struct DiffProviderRegistry {
-    providers: Vec<Box<dyn DiffProvider>>,
+    providers: Vec<Box<dyn DiffProvider + Sync + Send>>,
 }
 
 impl DiffProviderRegistry {
@@ -71,7 +71,7 @@ impl Default for DiffProviderRegistry {
     fn default() -> Self {
         // currently only git is supported
         // TODO make this configurable when more providers are added
-        let git: Box<dyn DiffProvider> = Box::new(Git);
+        let git: Box<dyn DiffProvider + Sync + Send> = Box::new(Git);
         let providers = vec![git];
         DiffProviderRegistry { providers }
     }

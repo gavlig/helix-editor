@@ -71,7 +71,7 @@ impl From<DocumentId> for PathOrId {
     }
 }
 
-type FileCallback<T> = Box<dyn Fn(&Editor, &T) -> Option<FileLocation>>;
+type FileCallback<T> = Box<dyn Fn(&Editor, &T) -> Option<FileLocation> + Sync + Send>;
 
 /// File path and range of lines (used to align and highlight lines)
 pub type FileLocation = (PathOrId, Option<(usize, usize)>);
@@ -127,8 +127,8 @@ impl<T: Item> FilePicker<T> {
     pub fn new(
         options: Vec<T>,
         editor_data: T::Data,
-        callback_fn: impl Fn(&mut Context, &T, Action) + 'static,
-        preview_fn: impl Fn(&Editor, &T) -> Option<FileLocation> + 'static,
+        callback_fn: impl Fn(&mut Context, &T, Action) + 'static + Sync + Send,
+        preview_fn: impl Fn(&Editor, &T) -> Option<FileLocation> + 'static + Sync + Send,
     ) -> Self {
         let truncate_start = true;
         let mut picker = Picker::new(options, editor_data, callback_fn);
@@ -417,7 +417,7 @@ impl Ord for PickerMatch {
     }
 }
 
-type PickerCallback<T> = Box<dyn Fn(&mut Context, &T, Action)>;
+type PickerCallback<T> = Box<dyn Fn(&mut Context, &T, Action) + Sync + Send>;
 
 pub struct Picker<T: Item> {
     options: Vec<T>,
@@ -447,7 +447,7 @@ impl<T: Item> Picker<T> {
     pub fn new(
         options: Vec<T>,
         editor_data: T::Data,
-        callback_fn: impl Fn(&mut Context, &T, Action) + 'static,
+        callback_fn: impl Fn(&mut Context, &T, Action) + 'static + Sync + Send,
     ) -> Self {
         let prompt = Prompt::new(
             "".into(),
@@ -937,17 +937,17 @@ impl<T: Item + 'static> Component for Picker<T> {
 /// Returns a new list of options to replace the contents of the picker
 /// when called with the current picker query,
 pub type DynQueryCallback<T> =
-    Box<dyn Fn(String, &mut Editor) -> BoxFuture<'static, anyhow::Result<Vec<T>>>>;
+    Box<dyn Fn(String, &mut Editor) -> BoxFuture<'static, anyhow::Result<Vec<T>>> + Sync + Send>;
 
 /// A picker that updates its contents via a callback whenever the
 /// query string changes. Useful for live grep, workspace symbols, etc.
-pub struct DynamicPicker<T: ui::menu::Item + Send> {
+pub struct DynamicPicker<T: ui::menu::Item> {
     file_picker: FilePicker<T>,
     query_callback: DynQueryCallback<T>,
     query: String,
 }
 
-impl<T: ui::menu::Item + Send> DynamicPicker<T> {
+impl<T: ui::menu::Item> DynamicPicker<T> {
     pub const ID: &'static str = "dynamic-picker";
 
     pub fn new(file_picker: FilePicker<T>, query_callback: DynQueryCallback<T>) -> Self {
@@ -959,7 +959,7 @@ impl<T: ui::menu::Item + Send> DynamicPicker<T> {
     }
 }
 
-impl<T: Item + Send + 'static> Component for DynamicPicker<T> {
+impl<T: Item + 'static> Component for DynamicPicker<T> {
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         self.file_picker.render(area, surface, cx);
     }

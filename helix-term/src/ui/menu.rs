@@ -14,9 +14,9 @@ use fuzzy_matcher::FuzzyMatcher;
 use helix_view::{graphics::Rect, Editor};
 use tui::layout::Constraint;
 
-pub trait Item {
+pub trait Item: Sync + Send {
     /// Additional editor state that is used for label calculation.
-    type Data;
+    type Data: 'static + Sync + Send;
 
     fn format(&self, data: &Self::Data) -> Row;
 
@@ -43,9 +43,9 @@ impl Item for PathBuf {
     }
 }
 
-pub type MenuCallback<T> = Box<dyn Fn(&mut Editor, Option<&T>, MenuEvent)>;
+pub type MenuCallback<T> = Box<dyn Fn(&mut Editor, Option<&T>, MenuEvent) + Sync + Send>;
 
-pub struct Menu<T: Item> {
+pub struct Menu<T: Item + Sync + Send> {
     options: Vec<T>,
     editor_data: T::Data,
 
@@ -68,7 +68,7 @@ pub struct Menu<T: Item> {
     allow_arrow_stealing: bool,
 }
 
-impl<T: Item> Menu<T> {
+impl<T: Item + Sync + Send> Menu<T> {
     const LEFT_PADDING: usize = 1;
 
     // TODO: it's like a slimmed down picker, share code? (picker = menu + prompt with different
@@ -76,7 +76,7 @@ impl<T: Item> Menu<T> {
     pub fn new(
         options: Vec<T>,
         editor_data: <T as Item>::Data,
-        callback_fn: impl Fn(&mut Editor, Option<&T>, MenuEvent) + 'static,
+        callback_fn: impl Fn(&mut Editor, Option<&T>, MenuEvent) + 'static + Sync + Send,
     ) -> Self {
         let matches = (0..options.len()).map(|i| (i, 0)).collect();
         Self {
@@ -235,7 +235,7 @@ impl<T: Item> Menu<T> {
     }
 }
 
-impl<T: Item + PartialEq> Menu<T> {
+impl<T: Item + PartialEq + Sync + Send> Menu<T> {
     pub fn replace_option(&mut self, old_option: T, new_option: T) {
         for option in &mut self.options {
             if old_option == *option {
@@ -248,7 +248,7 @@ impl<T: Item + PartialEq> Menu<T> {
 
 use super::PromptEvent as MenuEvent;
 
-impl<T: Item + 'static> Component for Menu<T> {
+impl<T: Item + 'static + Sync + Send> Component for Menu<T> {
     fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         let event = match event {
             Event::Key(event) => *event,

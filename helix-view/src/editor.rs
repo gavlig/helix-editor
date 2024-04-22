@@ -782,7 +782,7 @@ impl Default for SearchConfig {
     }
 }
 
-pub struct Motion(pub Box<dyn Fn(&mut Editor)>);
+pub struct Motion(pub Box<dyn Fn(&mut Editor) + Sync + Send>);
 impl Motion {
     pub fn run(&self, e: &mut Editor) {
         (self.0)(e)
@@ -835,7 +835,7 @@ pub struct Editor {
     pub debugger_events: SelectAll<UnboundedReceiverStream<dap::Payload>>,
     pub breakpoints: HashMap<PathBuf, Vec<Breakpoint>>,
 
-    pub clipboard_provider: Box<dyn ClipboardProvider>,
+    pub clipboard_provider: Box<dyn ClipboardProvider + Sync + Send>,
 
     pub syn_loader: Arc<syntax::Loader>,
     pub theme_loader: Arc<theme::Loader>,
@@ -857,7 +857,7 @@ pub struct Editor {
     pub status_msg_timer: Pin<Box<Sleep>>,
     pub autoinfo: Option<Info>,
 
-    pub config: Arc<dyn DynAccess<Config>>,
+    pub config: Arc<dyn DynAccess<Config> + Send + Sync>,
     pub auto_pairs: Option<AutoPairs>,
 
     pub idle_timer: Pin<Box<Sleep>>,
@@ -950,7 +950,7 @@ impl Editor {
         area: Rect,
         theme_loader: Arc<theme::Loader>,
         syn_loader: Arc<syntax::Loader>,
-        config: Arc<dyn DynAccess<Config>>,
+        config: Arc<dyn DynAccess<Config> + Send + Sync>,
     ) -> Self {
         let conf = config.load();
         let auto_pairs = (&conf.auto_pairs).into();

@@ -80,7 +80,7 @@ pub fn surface_by_id<'a>(id: &String, area: Rect, spatial_flags: SurfaceFlags, s
     }
 }
 
-pub trait Component: Any + AnyComponent {
+pub trait Component: Any + AnyComponent + Send + Sync {
     /// Process input events, return true if handled.
     fn handle_event(&mut self, _event: &Event, _ctx: &mut Context) -> EventResult {
         EventResult::Ignored(None)

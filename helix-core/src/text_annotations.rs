@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::ops::Range;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::syntax::Highlight;
 use crate::Tendril;
@@ -93,7 +93,7 @@ pub struct LineAnnotation {
 
 #[derive(Debug)]
 struct Layer<A, M> {
-    annotations: Rc<[A]>,
+    annotations: Arc<[A]>,
     current_index: Cell<usize>,
     metadata: M,
 }
@@ -128,8 +128,8 @@ impl<A, M> Layer<A, M> {
     }
 }
 
-impl<A, M> From<(Rc<[A]>, M)> for Layer<A, M> {
-    fn from((annotations, metadata): (Rc<[A]>, M)) -> Layer<A, M> {
+impl<A, M> From<(Arc<[A]>, M)> for Layer<A, M> {
+    fn from((annotations, metadata): (Arc<[A]>, M)) -> Layer<A, M> {
         Layer {
             annotations,
             current_index: Cell::new(0),
@@ -194,7 +194,7 @@ impl TextAnnotations {
     /// the annotations that belong to the layers added first will be shown first.
     pub fn add_inline_annotations(
         &mut self,
-        layer: Rc<[InlineAnnotation]>,
+        layer: Arc<[InlineAnnotation]>,
         highlight: Option<Highlight>,
     ) -> &mut Self {
         self.inline_annotations.push((layer, highlight).into());
@@ -211,7 +211,7 @@ impl TextAnnotations {
     ///
     /// If multiple layers contain overlay at the same position
     /// the overlay from the layer added last will be show.
-    pub fn add_overlay(&mut self, layer: Rc<[Overlay]>, highlight: Option<Highlight>) -> &mut Self {
+    pub fn add_overlay(&mut self, layer: Arc<[Overlay]>, highlight: Option<Highlight>) -> &mut Self {
         self.overlays.push((layer, highlight).into());
         self
     }
@@ -220,7 +220,7 @@ impl TextAnnotations {
     ///
     /// The line annotations **must be sorted** by their `char_idx`.
     /// Multiple line annotations with the same `char_idx` **are not allowed**.
-    pub fn add_line_annotation(&mut self, layer: Rc<[LineAnnotation]>) -> &mut Self {
+    pub fn add_line_annotation(&mut self, layer: Arc<[LineAnnotation]>) -> &mut Self {
         self.line_annotations.push((layer, ()).into());
         self
     }

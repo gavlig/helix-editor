@@ -19,7 +19,7 @@ use helix_core::{
 use std::{
     collections::{HashMap, VecDeque},
     fmt,
-    rc::Rc,
+    sync::Arc,
 };
 
 const JUMP_LIST_CAPACITY: usize = 30;
@@ -438,9 +438,9 @@ impl View {
             .and_then(|t| t.find_scope_index("ui.virtual.inlay-hint"))
             .map(Highlight);
 
-        let mut add_annotations = |annotations: &Rc<[_]>, style| {
+        let mut add_annotations = |annotations: &Arc<[_]>, style| {
             if !annotations.is_empty() {
-                text_annotations.add_inline_annotations(Rc::clone(annotations), style);
+                text_annotations.add_inline_annotations(Arc::clone(annotations), style);
             }
         };
 

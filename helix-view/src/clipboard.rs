@@ -92,7 +92,7 @@ pub fn get_clipboard_provider() -> Box<dyn ClipboardProvider> {
 }
 
 #[cfg(not(any(windows, target_os = "wasm32", target_os = "macos")))]
-pub fn get_clipboard_provider() -> Box<dyn ClipboardProvider> {
+pub fn get_clipboard_provider() -> Box<dyn ClipboardProvider + Sync + Send> {
     use crate::env::{binary_exists, env_var_is_set};
     use provider::command::is_exit_success;
     // TODO: support for user-defined provider, probably when we have plugin support by setting a

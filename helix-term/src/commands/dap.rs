@@ -56,7 +56,7 @@ impl ui::menu::Item for Thread {
 
 fn thread_picker(
     cx: &mut Context,
-    callback_fn: impl Fn(&mut Editor, &dap::Thread) + Send + 'static,
+    callback_fn: impl Fn(&mut Editor, &dap::Thread) + Send + 'static + Sync + Send,
 ) {
     let debugger = debugger!(cx.editor);
 

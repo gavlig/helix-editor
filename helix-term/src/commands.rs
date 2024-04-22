@@ -77,7 +77,7 @@ use grep_searcher::{sinks, BinaryDetection, SearcherBuilder};
 use ignore::{DirEntry, WalkBuilder, WalkState};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-pub type OnKeyCallback = Box<dyn FnOnce(&mut Context, KeyEvent)>;
+pub type OnKeyCallback = Box<dyn FnOnce(&mut Context, KeyEvent) + Sync + Send>;
 
 pub struct Context<'a> {
     pub register: Option<char>,
@@ -107,7 +107,7 @@ impl<'a> Context<'a> {
     #[inline]
     pub fn on_next_key(
         &mut self,
-        on_next_key_callback: impl FnOnce(&mut Context, KeyEvent) + 'static,
+        on_next_key_callback: impl FnOnce(&mut Context, KeyEvent) + 'static + Sync + Send,
     ) {
         self.on_next_key_callback = Some(Box::new(on_next_key_callback));
     }
@@ -1115,7 +1115,7 @@ pub fn move_cur_word_end(cx: &mut Context) {
 
 fn goto_para_impl<F>(cx: &mut Context, move_fn: F)
 where
-    F: Fn(RopeSlice, Range, usize, Movement) -> Range + 'static,
+    F: Fn(RopeSlice, Range, usize, Movement) -> Range + 'static + Sync + Send,
 {
     let count = cx.count();
     let motion = move |editor: &mut Editor| {
@@ -1272,7 +1272,7 @@ fn extend_next_long_word_end(cx: &mut Context) {
 
 fn will_find_char<F>(cx: &mut Context, search_fn: F, inclusive: bool, extend: bool)
 where
-    F: Fn(RopeSlice, char, usize, usize, bool) -> Option<usize> + 'static,
+    F: Fn(RopeSlice, char, usize, usize, bool) -> Option<usize> + 'static + Sync + Send,
 {
     // TODO: count is reset to 1 before next key so we move it into the closure here.
     // Would be nice to carry over.
@@ -2994,7 +2994,7 @@ fn goto_last_accessed_file(cx: &mut Context) {
 
 fn goto_last_modification(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
-    let pos = doc.history.get_mut().last_edit_pos();
+    let pos = doc.history.lock().last_edit_pos();
     let text = doc.text().slice(..);
     if let Some(pos) = pos {
         let selection = doc
@@ -4557,7 +4557,7 @@ fn shrink_selection(cx: &mut Context) {
     cx.editor.last_motion = Some(Motion(Box::new(motion)));
 }
 
-fn select_sibling_impl<F>(cx: &mut Context, sibling_fn: &'static F)
+fn select_sibling_impl<F: Sync + Send>(cx: &mut Context, sibling_fn: &'static F)
 where
     F: Fn(Node) -> Option<Node>,
 {

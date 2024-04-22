@@ -12,7 +12,7 @@ pub struct Overlay<T> {
     /// Child component
     pub content: T,
     /// Function to compute the size and position of the child component
-    pub calc_child_size: Box<dyn Fn(Rect) -> Rect>,
+    pub calc_child_size: Box<dyn Fn(Rect) -> Rect + Sync + Send>,
 }
 
 /// Surrounds the component with a margin of 5% on each side, and an additional 2 rows at the bottom

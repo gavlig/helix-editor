@@ -37,8 +37,8 @@ pub fn prompt(
     cx: &mut crate::commands::Context,
     prompt: std::borrow::Cow<'static, str>,
     history_register: Option<char>,
-    completion_fn: impl FnMut(&Editor, &str) -> Vec<prompt::Completion> + 'static,
-    callback_fn: impl FnMut(&mut crate::compositor::Context, &str, PromptEvent) + 'static,
+    completion_fn: impl FnMut(&Editor, &str) -> Vec<prompt::Completion> + 'static + Sync + Send,
+    callback_fn: impl FnMut(&mut crate::compositor::Context, &str, PromptEvent) + 'static + Sync + Send,
 ) {
     let mut prompt = Prompt::new(prompt, history_register, completion_fn, callback_fn);
     // Calculate the initial completion
@@ -51,8 +51,8 @@ pub fn prompt_with_input(
     prompt: std::borrow::Cow<'static, str>,
     input: String,
     history_register: Option<char>,
-    completion_fn: impl FnMut(&Editor, &str) -> Vec<prompt::Completion> + 'static,
-    callback_fn: impl FnMut(&mut crate::compositor::Context, &str, PromptEvent) + 'static,
+    completion_fn: impl FnMut(&Editor, &str) -> Vec<prompt::Completion> + 'static + Sync + Send,
+    callback_fn: impl FnMut(&mut crate::compositor::Context, &str, PromptEvent) + 'static + Sync + Send,
 ) {
     let prompt = Prompt::new(prompt, history_register, completion_fn, callback_fn)
         .with_line(input, cx.editor);
@@ -63,14 +63,13 @@ pub fn regex_prompt(
     cx: &mut crate::commands::Context,
     prompt: std::borrow::Cow<'static, str>,
     history_register: Option<char>,
-    completion_fn: impl FnMut(&Editor, &str) -> Vec<prompt::Completion> + 'static,
-    fun: impl Fn(&mut Editor, Regex, PromptEvent) + 'static,
+    completion_fn: impl FnMut(&Editor, &str) -> Vec<prompt::Completion> + 'static + Sync + Send,
+    fun: impl Fn(&mut Editor, Regex, PromptEvent) + 'static + Sync + Send,
 ) {
     let (view, doc) = current!(cx.editor);
     let doc_id = view.doc;
     let snapshot = doc.selection(view.id).clone();
     let offset_snapshot = view.offset;
-    let config = cx.editor.config();
 
     let mut prompt = Prompt::new(
         prompt,
@@ -92,7 +91,7 @@ pub fn regex_prompt(
                         return;
                     }
 
-                    let case_insensitive = if config.search.smart_case {
+                    let case_insensitive = if cx.editor.config().search.smart_case {
                         !input.chars().any(char::is_uppercase)
                     } else {
                         false
@@ -116,8 +115,9 @@ pub fn regex_prompt(
 
                             fun(cx.editor, regex, event);
 
+                            let scrolloff = cx.editor.config().scrolloff;
                             let (view, doc) = current!(cx.editor);
-                            view.ensure_cursor_in_view(doc, config.scrolloff);
+                            view.ensure_cursor_in_view(doc, scrolloff);
                         }
                         Err(err) => {
                             let (view, doc) = current!(cx.editor);
