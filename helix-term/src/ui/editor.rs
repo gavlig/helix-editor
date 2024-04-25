@@ -91,6 +91,7 @@ impl EditorView {
         view: &View,
         viewport: Rect,
         surface: &mut Surface,
+        translated_position_in: Option<TranslatedPosition>,
         is_focused: bool,
     ) {
         let inner = view.inner_area(doc);
@@ -179,16 +180,8 @@ impl EditorView {
             &mut line_decorations,
         );
 
-        if is_focused {
-            let cursor = doc
-                .selection(view.id)
-                .primary()
-                .cursor(doc.text().slice(..));
-            // set the cursor_cache to out of view in case the position is not found
-            editor.cursor_cache.set(Some(None));
-            let update_cursor_cache =
-                |_: &mut TextRenderer, pos| editor.cursor_cache.set(Some(Some(pos)));
-            translated_positions.push((cursor, Box::new(update_cursor_cache)));
+        if let Some(pos) = translated_position_in {
+            translated_positions.push(pos);
         }
 
         render_document(
@@ -236,6 +229,7 @@ impl EditorView {
         view: &View,
         _viewport: Rect,
         surfaces: &mut SurfacesMap,
+        translated_position_in: Option<TranslatedPosition>,
         is_focused: bool,
     ) {
         let inner = view.inner_area(doc);
@@ -320,15 +314,8 @@ impl EditorView {
             &mut line_decorations,
         );
 
-        if is_focused {
-            let cursor = doc
-                .selection(view.id)
-                .primary()
-                .cursor(doc.text().slice(..));
-            // set the cursor_cache to out of view in case the position is not found
-            editor.cursor_cache.set(Some(None));
-            let update_cursor_cache = |_: &mut TextRenderer, pos| editor.cursor_cache.set(Some(Some(pos)));
-            translated_positions.push((cursor, Box::new(update_cursor_cache)));
+        if let Some(pos) = translated_position_in {
+            translated_positions.push(pos);
         }
 
         render_document(
@@ -981,9 +968,26 @@ impl EditorView {
             cx.editor.resize(editor_area);
 
             for (view, is_focused) in cx.editor.tree.views() {
+                let mut new_cursor_cache = None;
+                let translated_position = if is_focused {
+                    cx.editor.cursor_cache = Some(None);
+                    
+                    let doc = cx.editor.document(view.doc).unwrap();
+                    let cursor = doc
+                        .selection(view.id)
+                        .primary()
+                        .cursor(doc.text().slice(..));
+                    // set the cursor_cache to out of view in case the position is not found
+                    let update_cursor_cache = |_: &mut TextRenderer, pos| new_cursor_cache = Some(Some(pos));
+                    let pos : TranslatedPosition = (cursor, Box::new(update_cursor_cache));
+                    Some(pos)
+                } else { None };
+                
                 let doc = cx.editor.document(view.doc).unwrap();
-                self.render_view_ext(cx.editor, doc, view, editor_area, cx_ext.surfaces, is_focused);
+                self.render_view_ext(cx.editor, doc, view, editor_area, cx_ext.surfaces, translated_position, is_focused);
                 self.render_statusline_ext(cx.editor, doc, view, cx_ext.surfaces, is_focused);
+
+                cx.editor.cursor_cache = new_cursor_cache;
             }
 
             self.render_status_msg_ext(cx.editor, editor_area, cx_ext.surfaces);
@@ -1770,8 +1774,24 @@ impl Component for EditorView {
         }
 
         for (view, is_focused) in cx.editor.tree.views() {
+
+            let mut new_cursor_cache = None;
+            let translated_position = if is_focused {
+                cx.editor.cursor_cache = Some(None);
+                
+                let doc = cx.editor.document(view.doc).unwrap();
+                let cursor = doc
+                    .selection(view.id)
+                    .primary()
+                    .cursor(doc.text().slice(..));
+                // set the cursor_cache to out of view in case the position is not found
+                let update_cursor_cache = |_: &mut TextRenderer, pos| new_cursor_cache = Some(Some(pos));
+                let pos : TranslatedPosition = (cursor, Box::new(update_cursor_cache));
+                Some(pos)
+            } else { None };
+
             let doc = cx.editor.document(view.doc).unwrap();
-            self.render_view(cx.editor, doc, view, area, surface, is_focused);
+            self.render_view(cx.editor, doc, view, area, surface, translated_position, is_focused);
         }
 
         if config.auto_info {

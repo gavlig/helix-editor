@@ -20,7 +20,6 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use std::{
     borrow::Cow,
-    cell::Cell,
     collections::{BTreeMap, HashMap},
     io::stdin,
     num::NonZeroUsize,
@@ -885,7 +884,7 @@ pub struct Editor {
     /// This cache is only a performance optimization to
     /// avoid calculating the cursor position multiple
     /// times during rendering and should not be set by other functions.
-    pub cursor_cache: Cell<Option<Option<Position>>>,
+    pub cursor_cache: Option<Option<Position>>,
     /// When a new completion request is sent to the server old
     /// unifinished request must be dropped. Each completion
     /// request is associated with a channel that cancels
@@ -996,7 +995,7 @@ impl Editor {
             config_events: unbounded_channel(),
             redraw_handle: Default::default(),
             needs_redraw: false,
-            cursor_cache: Cell::new(None),
+            cursor_cache: None,
             completion_request_handle: None,
             display_inlay_hints: false,
         }
@@ -1605,7 +1604,6 @@ impl Editor {
             .cursor(doc.text().slice(..));
         let pos = self
             .cursor_cache
-            .get()
             .unwrap_or_else(|| view.screen_coords_at_pos(doc, doc.text().slice(..), cursor));
         if let Some(mut pos) = pos {
             let inner = view.inner_area(doc);

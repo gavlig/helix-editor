@@ -425,7 +425,7 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
                     None => {
                         // This should not generally happen since the picker will not
                         // even open in the first place if there is no server.
-                        return async move { Err(anyhow::anyhow!("LSP not active")) }.boxed();
+                        return async move { Err(anyhow::anyhow!("LSP not active")) }.boxed_sync();
                     }
                 };
                 let symbol_request = match language_server.workspace_symbols(query) {
@@ -438,7 +438,7 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
                                 "Language server does not support workspace symbols"
                             ))
                         }
-                        .boxed();
+                        .boxed_sync();
                     }
                 };
 
@@ -449,7 +449,7 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
 
                     Ok(response.unwrap_or_default())
                 };
-                future.boxed()
+                future.boxed_sync()
             };
             let dyn_picker = DynamicPicker::new(picker, Box::new(get_symbols));
             compositor.push(Box::new(overlaid(dyn_picker)))

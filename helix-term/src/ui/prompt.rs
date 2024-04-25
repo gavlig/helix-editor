@@ -760,7 +760,7 @@ impl Component for Prompt {
         };
 
         let spatial_flags = SurfaceFlags {
-            anchor: SurfaceAnchor::Bottom | SurfaceAnchor::Fixed,
+            anchor: SurfaceAnchor::Bottom,
             placement: SurfacePlacement::Center,
             ..Default::default()
         };

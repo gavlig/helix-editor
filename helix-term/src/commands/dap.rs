@@ -109,11 +109,11 @@ fn get_breakpoint_at_current_line(editor: &mut Editor) -> Option<(usize, Breakpo
 
 fn dap_callback<T, F>(
     jobs: &mut Jobs,
-    call: impl Future<Output = helix_dap::Result<serde_json::Value>> + 'static + Send,
+    call: impl Future<Output = helix_dap::Result<serde_json::Value>> + 'static + Sync + Send,
     callback: F,
 ) where
-    T: for<'de> serde::Deserialize<'de> + Send + 'static,
-    F: FnOnce(&mut Editor, &mut Compositor, T) + Send + 'static,
+    T: for<'de> serde::Deserialize<'de> + Sync + Send + 'static,
+    F: FnOnce(&mut Editor, &mut Compositor, T) + Sync + Send + 'static,
 {
     let callback = Box::pin(async move {
         let json = call.await?;

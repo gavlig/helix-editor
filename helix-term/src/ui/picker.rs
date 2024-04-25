@@ -9,7 +9,7 @@ use crate::{
         EditorView,
     },
 };
-use futures_util::future::BoxFuture;
+use futures_util::future::SyncBoxFuture;
 use tui::{
     buffer::Buffer as Surface,
     buffer::SurfaceFlags,
@@ -937,7 +937,7 @@ impl<T: Item + 'static> Component for Picker<T> {
 /// Returns a new list of options to replace the contents of the picker
 /// when called with the current picker query,
 pub type DynQueryCallback<T> =
-    Box<dyn Fn(String, &mut Editor) -> BoxFuture<'static, anyhow::Result<Vec<T>>> + Sync + Send>;
+    Box<dyn Fn(String, &mut Editor) -> SyncBoxFuture<'static, anyhow::Result<Vec<T>>> + Sync + Send>;
 
 /// A picker that updates its contents via a callback whenever the
 /// query string changes. Useful for live grep, workspace symbols, etc.

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Error};
 use arc_swap::access::DynAccess;
 use arc_swap::ArcSwap;
-use futures_util::future::BoxFuture;
+use futures_util::future::SyncBoxFuture;
 use futures_util::FutureExt;
 use helix_core::auto_pairs::AutoPairs;
 use helix_core::doc_formatter::TextFormat;
@@ -105,7 +105,7 @@ pub struct DocumentSavedEvent {
 }
 
 pub type DocumentSavedEventResult = Result<DocumentSavedEvent, anyhow::Error>;
-pub type DocumentSavedEventFuture = BoxFuture<'static, DocumentSavedEventResult>;
+pub type DocumentSavedEventFuture = SyncBoxFuture<'static, DocumentSavedEventResult>;
 
 #[derive(Debug)]
 pub struct DocumentSymbols {
@@ -666,7 +666,7 @@ impl Document {
 
     /// The same as [`format`], but only returns formatting changes if auto-formatting
     /// is configured.
-    pub fn auto_format(&self) -> Option<BoxFuture<'static, Result<Transaction, FormatterError>>> {
+    pub fn auto_format(&self) -> Option<SyncBoxFuture<'static, Result<Transaction, FormatterError>>> {
         if self.language_config()?.auto_format {
             self.format()
         } else {
@@ -678,7 +678,7 @@ impl Document {
     /// to format it nicely.
     // We can't use anyhow::Result here since the output of the future has to be
     // clonable to be used as shared future. So use a custom error type.
-    pub fn format(&self) -> Option<BoxFuture<'static, Result<Transaction, FormatterError>>> {
+    pub fn format(&self) -> Option<SyncBoxFuture<'static, Result<Transaction, FormatterError>>> {
         if let Some(formatter) = self
             .language_config()
             .and_then(|c| c.formatter.clone())
@@ -732,7 +732,7 @@ impl Document {
 
                 Ok(helix_core::diff::compare_ropes(&text, &Rope::from(str)))
             };
-            return Some(formatting_future.boxed());
+            return Some(formatting_future.boxed_sync());
         };
 
         let language_server = self.language_server()?;
@@ -760,7 +760,7 @@ impl Document {
                 offset_encoding,
             ))
         };
-        Some(fut.boxed())
+        Some(fut.boxed_sync())
     }
 
     pub fn save<P: Into<PathBuf>>(
@@ -768,7 +768,7 @@ impl Document {
         path: Option<P>,
         force: bool,
     ) -> Result<
-        impl Future<Output = Result<DocumentSavedEvent, anyhow::Error>> + 'static + Send,
+        impl Future<Output = Result<DocumentSavedEvent, anyhow::Error>> + 'static + Sync + Send,
         anyhow::Error,
     > {
         let path = path.map(|path| path.into());
@@ -784,7 +784,7 @@ impl Document {
         path: Option<PathBuf>,
         force: bool,
     ) -> Result<
-        impl Future<Output = Result<DocumentSavedEvent, anyhow::Error>> + 'static + Send,
+        impl Future<Output = Result<DocumentSavedEvent, anyhow::Error>> + 'static + Sync + Send,
         anyhow::Error,
     > {
         log::debug!(

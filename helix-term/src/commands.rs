@@ -115,11 +115,11 @@ impl<'a> Context<'a> {
     #[inline]
     pub fn callback<T, F>(
         &mut self,
-        call: impl Future<Output = helix_lsp::Result<serde_json::Value>> + 'static + Send,
+        call: impl Future<Output = helix_lsp::Result<serde_json::Value>> + 'static + Sync + Send,
         callback: F,
     ) where
-        T: for<'de> serde::Deserialize<'de> + Send + 'static,
-        F: FnOnce(&mut Editor, &mut Compositor, T) + Send + 'static,
+        T: for<'de> serde::Deserialize<'de> + Sync + Send + 'static,
+        F: FnOnce(&mut Editor, &mut Compositor, T) + Sync + Send + 'static,
     {
         self.jobs.callback(make_job_callback(call, callback));
     }
@@ -133,12 +133,12 @@ impl<'a> Context<'a> {
 
 #[inline]
 fn make_job_callback<T, F>(
-    call: impl Future<Output = helix_lsp::Result<serde_json::Value>> + 'static + Send,
+    call: impl Future<Output = helix_lsp::Result<serde_json::Value>> + 'static + Sync + Send,
     callback: F,
 ) -> std::pin::Pin<Box<impl Future<Output = Result<Callback, anyhow::Error>>>>
 where
-    T: for<'de> serde::Deserialize<'de> + Send + 'static,
-    F: FnOnce(&mut Editor, &mut Compositor, T) + Send + 'static,
+    T: for<'de> serde::Deserialize<'de> + Sync + Send + 'static,
+    F: FnOnce(&mut Editor, &mut Compositor, T) + Sync + Send + 'static,
 {
     Box::pin(async move {
         let json = call.await?;
@@ -2802,7 +2802,7 @@ async fn make_format_callback(
     doc_id: DocumentId,
     doc_version: usize,
     view_id: ViewId,
-    format: impl Future<Output = Result<Transaction, FormatterError>> + Send + 'static,
+    format: impl Future<Output = Result<Transaction, FormatterError>> + Sync + Send + 'static,
     write: Option<(Option<PathBuf>, bool)>,
 ) -> anyhow::Result<job::Callback> {
     let format = format.await;
