@@ -94,10 +94,8 @@ impl Default for Cell {
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SurfacePlacement {
-    #[default]
-    Unknown,
-
     Top,
+    #[default]
     Center,
     Bottom,
     Left,
@@ -115,14 +113,12 @@ pub enum SurfacePlacement {
     AreaCoordinates,
 }
 
-bitflags! {
-    #[derive(Default, Clone, Copy, Eq, PartialEq, Debug)]
-    pub struct SurfaceAnchor : u32 {
-        const Unknown = 0b000;
-        const Top = 0b001;
-        const Bottom = 0b010;
-        const Fixed = 0b100;
-    }
+#[derive(Default, Clone, Copy, Eq, PartialEq, Debug)]
+pub enum SurfaceAnchor {
+    #[default]
+    Top,
+    Bottom,
+    Fixed,
 }
 
 pub struct SurfaceFlags {
