@@ -309,7 +309,7 @@ impl<T: Component> Component for Popup<T> {
 
         let surface = {
             let id = String::from(self.id);
-            surface_by_id_mut(&id, area, SurfaceFlags{ placement: SurfacePlacement::AreaCoordinates, ..Default::default() }, ctx.surfaces)
+            surface_by_id_mut(&id, area, SurfaceFlags{ placement: SurfacePlacement::GridCoordinates((area.x, area.y)), ..Default::default() }, ctx.surfaces)
         };
 
         // clear area

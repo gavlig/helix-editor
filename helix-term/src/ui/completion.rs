@@ -549,7 +549,7 @@ impl Component for Completion {
         if let Some((mut markdown_doc, area)) = self.markdown_popup(ctx.editor_area, &mut ctx.vanilla) {
             let markdown_surface = {
                 let id = String::from(Completion::ID_DOC);
-                surface_by_id_mut(&id, area, SurfaceFlags{ placement: SurfacePlacement::AreaCoordinates, ..Default::default() }, ctx.surfaces)
+                surface_by_id_mut(&id, area, SurfaceFlags{ placement: SurfacePlacement::GridCoordinates((area.x, area.y)), ..Default::default() }, ctx.surfaces)
             };
 
             // clear area

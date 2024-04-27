@@ -94,6 +94,8 @@ impl Default for Cell {
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SurfacePlacement {
+    Absolute,
+
     Top,
     #[default]
     Center,
@@ -110,7 +112,7 @@ pub enum SurfacePlacement {
     BottomLeft,
     BottomRight,
 
-    AreaCoordinates,
+    GridCoordinates((u16, u16)),
 }
 
 #[derive(Default, Clone, Copy, Eq, PartialEq, Debug)]
