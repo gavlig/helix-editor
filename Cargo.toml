@@ -34,7 +34,7 @@ package.helix-tui.opt-level = 2
 package.helix-term.opt-level = 2
 
 [patch.crates-io]
-futures-core      = { path = "../futures-rs/futures-core" }
-futures-task      = { path = "../futures-rs/futures-task" }
-futures-executor  = { path = "../futures-rs/futures-executor" }
-futures-util      = { path = "../futures-rs/futures-util" }
+futures-core      = { git = "https://github.com/gavlig/futures-rs.git", branch = "kodiki" }
+futures-task      = { git = "https://github.com/gavlig/futures-rs.git", branch = "kodiki" }
+futures-executor  = { git = "https://github.com/gavlig/futures-rs.git", branch = "kodiki" }
+futures-util      = { git = "https://github.com/gavlig/futures-rs.git", branch = "kodiki" }
